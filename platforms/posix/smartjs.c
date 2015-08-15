@@ -1,14 +1,18 @@
-#include "smartjs.h"
 #include <stdlib.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <signal.h>
 #include <time.h>
+
 #include <sj_hal.h>
 #include <sj_v7_ext.h>
 #include <sj_conf.h>
 #include <string.h>
+#include <sj_i2c_js.h>
+
+#include "smartjs.h"
+#include "posix_http_client.h"
 
 struct v7 *v7;
 
@@ -44,11 +48,16 @@ cleanup:
   }
 }
 
-void init_v7() {
+void init_smartjs() {
   struct v7_create_opts opts = {0, 0, 0};
 
   v7 = v7_create_opt(opts);
 
   sj_init_v7_ext(v7);
   init_conf(v7);
+
+  init_fossa();
+  sj_init_simple_http_client(v7);
+
+  init_i2cjs(v7);
 }

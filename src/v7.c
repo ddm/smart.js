@@ -13,7 +13,7 @@
  * See the GNU General Public License for more details.
  *
  * Alternatively, you can license this software under a commercial
- * license, as set out in <http://cesanta.com/products.html>.
+ * license, as set out in <https://www.cesanta.com/license>.
  */
 
 /*
@@ -113,7 +113,8 @@ enum v7_err v7_exec_with(struct v7 *, v7_val_t *result, const char *js_code,
  * in the binary format, suitable for execution by V7 instance.
  * NOTE: `fp` must be a valid, opened, writable file stream.
  */
-void v7_compile(const char *js_code, int generate_binary_output, FILE *fp);
+enum v7_err v7_compile(const char *js_code, int generate_binary_output,
+                       FILE *fp);
 
 /*
  * Perform garbage collection.
@@ -454,7 +455,6 @@ int v7_main(int argc, char *argv[], void (*init_func)(struct v7 *));
 #define V7_ENABLE__NUMBER__POSITIVE_INFINITY 1
 #define V7_ENABLE__Object__create 1
 #define V7_ENABLE__Object__defineProperties 1
-#define V7_ENABLE__Object__defineProperty 1
 #define V7_ENABLE__Object__getOwnPropertyDescriptor 1
 #define V7_ENABLE__Object__getOwnPropertyNames 1
 #define V7_ENABLE__Object__getPrototypeOf 1
@@ -502,7 +502,7 @@ int v7_main(int argc, char *argv[], void (*init_func)(struct v7 *));
  * See the GNU General Public License for more details.
  *
  * Alternatively, you can license this software under a commercial
- * license, as set out in <http://cesanta.com/products.html>.
+ * license, as set out in <https://www.cesanta.com/license>.
  */
 
 #ifdef V7_EXPOSE_PRIVATE
@@ -824,6 +824,14 @@ char *utfutf(char *s1, char *s2);
 #endif
 #define _FILE_OFFSET_BITS 64 /* Enable 64-bit file offsets */
 
+#if !(defined(AVR_LIBC) || defined(PICOTCP))
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <time.h>
+#include <signal.h>
+#endif
+
 #ifndef BYTE_ORDER
 #define LITTLE_ENDIAN 0x41424344
 #define BIG_ENDIAN 0x44434241
@@ -847,14 +855,6 @@ char *utfutf(char *s1, char *s2);
 #ifdef _MSC_VER
 #pragma warning(disable : 4127) /* FD_SET() emits warning, disable it */
 #pragma warning(disable : 4204) /* missing c99 support */
-#endif
-
-#if !(defined(AVR_LIBC) || defined(PICOTCP))
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <time.h>
-#include <signal.h>
 #endif
 
 #ifdef PICOTCP
@@ -966,7 +966,9 @@ struct dirent *readdir(DIR *dir);
 #include <stdarg.h>
 #ifndef AVR_LIBC
 #define closesocket(x) close(x)
+#ifndef __cdecl
 #define __cdecl
+#endif
 #define INVALID_SOCKET (-1)
 #define INT64_FMT PRId64
 #define to64(x) strtoll(x, NULL, 10)
@@ -1867,6 +1869,9 @@ V7_PRIVATE val_t rx_exec(struct v7 *v7, val_t rx, val_t str, int lind);
 
 V7_PRIVATE size_t gc_arena_size(struct gc_arena *);
 
+V7_PRIVATE v7_val_t
+i_apply(struct v7 *, val_t func, val_t this_obj, val_t args);
+
 #if defined(__cplusplus)
 }
 #endif /* __cplusplus */
@@ -2276,7 +2281,7 @@ V7_PRIVATE void tmp_stack_push(struct gc_tmp_frame *, val_t *);
  * See the GNU General Public License for more details.
  *
  * Alternatively, you can license this software under a commercial
- * license, as set out in <http://cesanta.com/>.
+ * license, as set out in <https://www.cesanta.com/license>.
  */
 
 #ifndef SLRE_HEADER_INCLUDED
@@ -2378,6 +2383,8 @@ V7_PRIVATE int calc_llen(size_t len);
  * All rights reserved
  */
 
+#ifndef EXCLUDE_COMMON
+
 #include <assert.h>
 #include <string.h>
 
@@ -2457,6 +2464,8 @@ void mbuf_remove(struct mbuf *mb, size_t n) {
     mb->len -= n;
   }
 }
+
+#endif /* EXCLUDE_COMMON */
 /*
  * The authors of this software are Rob Pike and Ken Thompson.
  *              Copyright (c) 2002 by Lucent Technologies.
@@ -2470,6 +2479,9 @@ void mbuf_remove(struct mbuf *mb, size_t n) {
  * ANY REPRESENTATION OR WARRANTY OF ANY KIND CONCERNING THE MERCHANTABILITY
  * OF THIS SOFTWARE OR ITS FITNESS FOR ANY PARTICULAR PURPOSE.
  */
+ 
+#ifndef EXCLUDE_COMMON
+
 #ifndef NO_LIBC
 #include <ctype.h>
 #endif
@@ -3811,10 +3823,14 @@ char *utfnshift(char *s, long m) {
 }
 
 #endif /* V7_ENABLE__UTF */
+
+#endif /* EXCLUDE_COMMON */
 /*
  * Copyright (c) 2014 Cesanta Software Limited
  * All rights reserved
  */
+
+#ifndef EXCLUDE_COMMON
 
 
 void cs_base64_encode(const unsigned char *src, int src_len, char *dst) {
@@ -3900,6 +3916,8 @@ int cs_base64_decode(const unsigned char *s, int len, char *dst) {
   *dst = 0;
   return orig_len - len;
 }
+
+#endif /* EXCLUDE_COMMON */
 /*
  * This code implements the MD5 message-digest algorithm.
  * The algorithm is due to Ron Rivest.  This code was
@@ -3917,7 +3935,7 @@ int cs_base64_decode(const unsigned char *s, int len, char *dst) {
  * will fill a supplied 16-byte array with the digest.
  */
 
-#ifndef DISABLE_MD5
+#if !defined(DISABLE_MD5) && !defined(EXCLUDE_COMMON)
 
 
 static void byteReverse(unsigned char *buf, unsigned longs) {
@@ -4103,11 +4121,12 @@ void MD5_Final(unsigned char digest[16], MD5_CTX *ctx) {
   memcpy(digest, ctx->buf, 16);
   memset((char *) ctx, 0, sizeof(*ctx));
 }
-#endif
+
+#endif /* EXCLUDE_COMMON */
 /* Copyright(c) By Steve Reid <steve@edmweb.com> */
 /* 100% Public Domain */
 
-#ifndef DISABLE_SHA1
+#if !defined(DISABLE_SHA1) && !defined(EXCLUDE_COMMON)
 
 
 #define SHA1HANDSOFF
@@ -4350,11 +4369,14 @@ void hmac_sha1(const unsigned char *key, size_t keylen,
   SHA1Update(&ctx, out, 20);
   SHA1Final(out, &ctx);
 }
-#endif
+
+#endif /* EXCLUDE_COMMON */
 /*
  * Copyright (c) 2015 Cesanta Software Limited
  * All rights reserved
  */
+
+#ifndef EXCLUDE_COMMON
 
 
 #define C_SNPRINTF_APPEND_CHAR(ch)       \
@@ -4557,10 +4579,14 @@ void to_wchar(const char *path, wchar_t *wbuf, size_t wbuf_len) {
   }
 }
 #endif /* _WIN32 */
+
+#endif /* EXCLUDE_COMMON */
 /*
  * Copyright (c) 2015 Cesanta Software Limited
  * All rights reserved
  */
+
+#ifndef EXCLUDE_COMMON
 
 
 /*
@@ -4642,6 +4668,8 @@ struct dirent *readdir(DIR *dir) {
   return result;
 }
 #endif
+
+#endif /* EXCLUDE_COMMON */
 /*
  * Copyright (c) 2014 Cesanta Software Limited
  * All rights reserved
@@ -6428,21 +6456,24 @@ V7_PRIVATE void ast_free(struct ast *ast) {
  * by V7 with no extra input.
  * `fp` must be an opened writable file stream to write compiled AST to.
  */
-void v7_compile(const char *code, int binary, FILE *fp) {
+enum v7_err v7_compile(const char *code, int binary, FILE *fp) {
   struct ast ast;
   struct v7 *v7 = v7_create();
   ast_off_t pos = 0;
+  enum v7_err err;
 
   ast_init(&ast, 0);
-  if (parse(v7, &ast, code, 1) != V7_OK) {
-    fprintf(stderr, "%s\n", "parse error");
-  } else if (binary) {
-    fwrite(ast.mbuf.buf, ast.mbuf.len, 1, fp);
-  } else {
-    ast_dump_tree(fp, &ast, &pos, 0);
+  err = parse(v7, &ast, code, 1);
+  if (err == V7_OK) {
+    if (binary) {
+      fwrite(ast.mbuf.buf, ast.mbuf.len, 1, fp);
+    } else {
+      ast_dump_tree(fp, &ast, &pos, 0);
+    }
   }
   ast_free(&ast);
   v7_destroy(v7);
+  return err;
 }
 #endif
 /*
@@ -7242,7 +7273,7 @@ V7_PRIVATE void v7_invoke_setter(struct v7 *v7, struct v7_property *prop,
     setter = v7_array_get(v7, prop->value, 1);
   }
   v7_array_set(v7, args, 0, val);
-  v7_apply(v7, setter, obj, args);
+  i_apply(v7, setter, obj, args);
 }
 
 V7_PRIVATE struct v7_property *v7_set_prop(struct v7 *v7, val_t obj, val_t name,
@@ -7392,7 +7423,8 @@ int v7_set_method(struct v7 *v7, v7_val_t obj, const char *name,
 
 V7_PRIVATE int set_cfunc_prop(struct v7 *v7, val_t o, const char *name,
                               v7_cfunction_t f) {
-  return v7_set_property(v7, o, name, strlen(name), 0, v7_create_cfunction(f));
+  return v7_set_property(v7, o, name, strlen(name), V7_PROPERTY_DONT_ENUM,
+                         v7_create_cfunction(f));
 }
 
 V7_PRIVATE val_t
@@ -7405,7 +7437,7 @@ v7_property_value(struct v7 *v7, val_t obj, struct v7_property *p) {
     if (p->attributes & V7_PROPERTY_SETTER) {
       getter = v7_array_get(v7, p->value, 0);
     }
-    return v7_apply(v7, getter, obj, V7_UNDEFINED);
+    return i_apply(v7, getter, obj, V7_UNDEFINED);
   }
   return p->value;
 }
@@ -8368,7 +8400,8 @@ static void gc_dump_arena_stats(const char *msg, struct gc_arena *a) {
 #if V7_ENABLE__Memory__stats
   if (a->verbose) {
     fprintf(stderr, "%s: total allocations %lu, max %lu, alive %lu\n", msg,
-            a->allocations, gc_arena_size(a), a->alive);
+            (long unsigned int) a->allocations,
+            (long unsigned int) gc_arena_size(a), (long unsigned int) a->alive);
   }
 #endif
 #endif
@@ -9578,7 +9611,7 @@ static val_t create_exception(struct v7 *v7, enum error_ctor ex,
   v7_array_set(v7, args, 0, v7_create_string(v7, msg, strlen(msg), 1));
   v7->creating_exception++;
   e = create_object(v7, v7_get(v7, v7->error_objects[ex], "prototype", 9));
-  v7_apply(v7, v7->error_objects[ex], e, args);
+  i_apply(v7, v7->error_objects[ex], e, args);
   v7->creating_exception--;
   return e;
 }
@@ -9608,12 +9641,12 @@ V7_PRIVATE val_t i_value_of(struct v7 *v7, val_t v) {
 
   if ((f = v7_get(v7, v, "valueOf", 7)) != V7_UNDEFINED) {
     /*
-     * v7_apply will root all parameters since it can be called
+     * i_apply will root all parameters since it can be called
      * from user code, hence it's not necessary to root `f`.
      * This assumes all callers of i_value_of will root their
      * temporary values.
      */
-    v = v7_apply(v7, f, v, v7_create_undefined());
+    v = i_apply(v7, f, v, v7_create_undefined());
   }
   return v;
 }
@@ -9747,9 +9780,8 @@ static int i_bool_bin_op(struct v7 *v7, enum ast_tag tag, double a, double b) {
   }
 }
 
-static __attribute__((noinline)) val_t
-    i_eval_expr_common(struct v7 *v7, struct ast *a, ast_off_t *pos,
-                       val_t scope) {
+static NOINLINE val_t
+i_eval_expr_common(struct v7 *v7, struct ast *a, ast_off_t *pos, val_t scope) {
   enum ast_tag tag = ast_fetch_tag(a, pos);
   val_t res = v7_create_undefined(), v1 = v7_create_undefined();
   val_t v2 = v7_create_undefined();
@@ -10917,30 +10949,34 @@ static val_t i_eval_stmt(struct v7 *v7, struct ast *a, ast_off_t *pos,
       }
       loop = *pos;
 
-      for (p = v7_to_object(obj)->properties; p; p = p->next, *pos = loop) {
-        if (p->attributes & (V7_PROPERTY_HIDDEN | V7_PROPERTY_DONT_ENUM)) {
-          continue;
-        }
-        key = p->name;
-        if ((var = v7_get_property(v7, scope, name, name_len)) != NULL) {
-          var->value = key;
-        } else {
-          v7_set_property(v7, v7->global_object, name, name_len, 0, key);
-        }
+      for (; v7_to_object(obj) != NULL;
+           obj = v7_object_to_value(
+               v7_is_function(obj) ? NULL : v7_to_object(obj)->prototype)) {
+        for (p = v7_to_object(obj)->properties; p; p = p->next, *pos = loop) {
+          if (p->attributes & (V7_PROPERTY_HIDDEN | V7_PROPERTY_DONT_ENUM)) {
+            continue;
+          }
+          key = p->name;
+          if ((var = v7_get_property(v7, scope, name, name_len)) != NULL) {
+            var->value = key;
+          } else {
+            v7_set_property(v7, v7->global_object, name, name_len, 0, key);
+          }
 
-        /* for some reason lcov doesn't mark the following lines executing */
-        res = i_eval_stmts(v7, a, pos, end, scope, brk); /* LCOV_EXCL_LINE */
-        switch (*brk) {                                  /* LCOV_EXCL_LINE */
-          case B_RUN:
-            break;
-          case B_CONTINUE:
-            *brk = B_RUN;
-            break;
-          case B_BREAK:
-            *brk = B_RUN; /* fall through */
-          case B_RETURN:
-            *pos = end;
-            goto cleanup;
+          /* for some reason lcov doesn't mark the following lines executing */
+          res = i_eval_stmts(v7, a, pos, end, scope, brk); /* LCOV_EXCL_LINE */
+          switch (*brk) {                                  /* LCOV_EXCL_LINE */
+            case B_RUN:
+              break;
+            case B_CONTINUE:
+              *brk = B_RUN;
+              break;
+            case B_BREAK:
+              *brk = B_RUN; /* fall through */
+            case B_RETURN:
+              *pos = end;
+              goto cleanup;
+          }
         }
       }
       *pos = end;
@@ -11141,8 +11177,22 @@ cleanup:
   return res;
 }
 
+v7_val_t v7_apply(struct v7 *v7, v7_val_t func, v7_val_t this_obj,
+                  v7_val_t args) {
+  v7_val_t res;
+  jmp_buf saved_jmp_buf;
+  memcpy(&saved_jmp_buf, &v7->jmp_buf, sizeof(saved_jmp_buf));
+  if (sigsetjmp(v7->jmp_buf, 0) != 0) {
+    return v7->thrown_error;
+  }
+  res = i_apply(v7, func, this_obj, args);
+  memcpy(&v7->jmp_buf, &saved_jmp_buf, sizeof(saved_jmp_buf));
+  return res;
+}
+
 /* Invoke a function applying the argument array */
-val_t v7_apply(struct v7 *v7, val_t f, val_t this_object, val_t args) {
+V7_PRIVATE val_t
+i_apply(struct v7 *v7, val_t f, val_t this_object, val_t args) {
   struct v7_function *func;
   ast_off_t pos, body, end;
   enum ast_tag tag;
@@ -11158,7 +11208,7 @@ val_t v7_apply(struct v7 *v7, val_t f, val_t this_object, val_t args) {
   tmp_stack_push(&vf, &arguments);
   tmp_stack_push(&vf, &saved_this);
   /*
-   * Since v7_apply can be called from user code
+   * Since i_apply can be called from user code
    * we have to treat all arguments as roots.
    */
   tmp_stack_push(&vf, &args);
@@ -11740,57 +11790,76 @@ V7_PRIVATE void init_stdlib(struct v7 *v7) {
 #define STRINGIFY(x) #x
 
 static const char js_array_indexOf[] = STRINGIFY(
-    Array.prototype.indexOf = function(a, x) {
-      var i; var r = -1; var b = +x;
-      if (!b || b < 0) b = 0;
-      for (i in this) if (i >= b && (r < 0 || i < r) && this[i] === a) r = +i;
-      return r;
-    };);
+    Object.defineProperty(Array.prototype, "indexOf", {
+      writable:true,
+      configurable: true,
+      value: function(a, x) {
+        var i; var r = -1; var b = +x;
+        if (!b || b < 0) b = 0;
+        for (i in this) if (i >= b && (r < 0 || i < r) && this[i] === a) r = +i;
+        return r;
+    }}););
 
 static const char js_array_lastIndexOf[] = STRINGIFY(
-    Array.prototype.lastIndexOf = function(a, x) {
-      var i; var r = -1; var b = +x;
-      if (isNaN(b) || b < 0 || b >= this.length) b = this.length - 1;
-      for (i in this) if (i <= b && (r < 0 || i > r) && this[i] === a) r = +i;
-      return r;
-    };);
+    Object.defineProperty(Array.prototype, "lastIndexOf", {
+      writable:true,
+      configurable: true,
+      value: function(a, x) {
+        var i; var r = -1; var b = +x;
+        if (isNaN(b) || b < 0 || b >= this.length) b = this.length - 1;
+        for (i in this) if (i <= b && (r < 0 || i > r) && this[i] === a) r = +i;
+        return r;
+    }}););
 
 #if V7_ENABLE__Array__reduce
 static const char js_array_reduce[] = STRINGIFY(
-    Array.prototype.reduce = function(a, b) {
-      var f = 0;
-      if (typeof(a) != "function") {
-        throw new TypeError(a + " is not a function");
-      }
-      for (var k in this) {
-        if (f == 0 && b === undefined) {
-          b = this[k];
-          f = 1;
-        } else {
-          b = a(b, this[k], k, this);
+    Object.defineProperty(Array.prototype, "reduce", {
+      writable:true,
+      configurable: true,
+      value: function(a, b) {
+        var f = 0;
+        if (typeof(a) != "function") {
+          throw new TypeError(a + " is not a function");
         }
-      }
-      return b;
-    };);
+        for (var k in this) {
+          if (k > this.length) break;
+          if (f == 0 && b === undefined) {
+            b = this[k];
+            f = 1;
+          } else {
+            b = a(b, this[k], k, this);
+          }
+        }
+        return b;
+    }}););
 #endif
 
 static const char js_array_pop[] = STRINGIFY(
-    Array.prototype.pop = function() {
+    Object.defineProperty(Array.prototype, "pop", {
+      writable:true,
+      configurable: true,
+      value: function() {
       var i = this.length - 1;
-      return this.splice(i, 1)[0];
-    };);
+        return this.splice(i, 1)[0];
+    }}););
 
 static const char js_array_shift[] = STRINGIFY(
-    Array.prototype.shift = function() {
-      return this.splice(0, 1)[0];
-    };);
+    Object.defineProperty(Array.prototype, "shift", {
+      writable:true,
+      configurable: true,
+      value: function() {
+        return this.splice(0, 1)[0];
+    }}););
 
 #if V7_ENABLE__Function__call
 static const char js_function_call[] = STRINGIFY(
-    Function.prototype.call = function() {
-      var t = arguments.splice(0, 1)[0];
-      return this.apply(t, arguments);
-    };);
+    Object.defineProperty(Function.prototype, "call", {
+      writable:true,
+      configurable: true,
+      value: function() {
+        var t = arguments.splice(0, 1)[0];
+        return this.apply(t, arguments);
+    }}););
 #endif
 
 static const char * const js_functions[] = {
@@ -11842,7 +11911,7 @@ static const char * const js_functions[] = {
  * See the GNU General Public License for more details.
  *
  * Alternatively, you can license this software under a commercial
- * license, as set out in <http://cesanta.com/>.
+ * license, as set out in <https://www.cesanta.com/license>.
  */
 
 
@@ -13632,7 +13701,6 @@ static val_t _Obj_defineProperty(struct v7 *v7, val_t obj, const char *name,
   return obj;
 }
 
-#if V7_ENABLE__Object__defineProperty
 static val_t Obj_defineProperty(struct v7 *v7, val_t this_obj, val_t args) {
   val_t obj = v7_array_get(v7, args, 0);
   val_t name = v7_array_get(v7, args, 1);
@@ -13646,7 +13714,6 @@ static val_t Obj_defineProperty(struct v7 *v7, val_t this_obj, val_t args) {
   name_len = v7_stringify_value(v7, name, name_buf, sizeof(name_buf));
   return _Obj_defineProperty(v7, obj, name_buf, name_len, desc);
 }
-#endif
 
 static void o_define_props(struct v7 *v7, val_t obj, val_t descs) {
   struct v7_property *p;
@@ -13785,7 +13852,8 @@ V7_PRIVATE void init_object(struct v7 *v7) {
 
   object = v7_get(v7, v7->global_object, "Object", 6);
   v7_set(v7, object, "prototype", 9, 0, v7->object_prototype);
-  v7_set(v7, v7->object_prototype, "constructor", 11, 0, object);
+  v7_set(v7, v7->object_prototype, "constructor", 11, V7_PROPERTY_DONT_ENUM,
+         object);
 
   set_method(v7, v7->object_prototype, "toString", Obj_toString, 0);
 #if V7_ENABLE__Object__getPrototypeOf
@@ -13795,9 +13863,10 @@ V7_PRIVATE void init_object(struct v7 *v7) {
   set_cfunc_prop(v7, object, "getOwnPropertyDescriptor",
                  Obj_getOwnPropertyDescriptor);
 #endif
-#if V7_ENABLE__Object__defineProperty
+
+  /* defineProperty is currently required to perform stdlib initialization */
   set_method(v7, object, "defineProperty", Obj_defineProperty, 3);
-#endif
+
 #if V7_ENABLE__Object__defineProperties
   set_cfunc_prop(v7, object, "defineProperties", Obj_defineProperties);
 #endif
@@ -14113,7 +14182,7 @@ static int a_cmp(void *user_data, const void *pa, const void *pb) {
     val_t res, args = v7_create_dense_array(v7);
     v7_array_push(v7, args, a);
     v7_array_push(v7, args, b);
-    res = v7_apply(v7, func, V7_UNDEFINED, args);
+    res = i_apply(v7, func, V7_UNDEFINED, args);
     return (int) -v7_to_number(res);
   } else {
     char sa[100], sb[100];
@@ -14265,7 +14334,7 @@ static val_t a_splice(struct v7 *v7, val_t this_obj, val_t args, int mutate) {
   long arg1 = arg_long(v7, args, 1, len);
 
   /* Bounds check */
-  if (len <= 0) return res;
+  if (!mutate && len <= 0) return res;
   if (arg0 < 0) arg0 = len + arg0;
   if (arg0 < 0) arg0 = 0;
   if (arg0 > len) arg0 = len;
@@ -14353,7 +14422,7 @@ static val_t a_prep2(struct v7 *v7, val_t a, val_t v, val_t n, val_t t) {
   v7_array_push(v7, params, v);
   v7_array_push(v7, params, n);
   v7_array_push(v7, params, t);
-  return v7_apply(v7, a, t, params);
+  return i_apply(v7, a, t, params);
 }
 
 static val_t Array_map(struct v7 *v7, val_t this_obj, val_t args) {
@@ -14503,8 +14572,9 @@ V7_PRIVATE void init_array(struct v7 *v7) {
 
   v7_array_set(v7, length, 0, v7_create_cfunction(Array_get_length));
   v7_array_set(v7, length, 1, v7_create_cfunction(Array_set_length));
-  v7_set_property(v7, v7->array_prototype, "length", 6,
-                  V7_PROPERTY_GETTER | V7_PROPERTY_SETTER, length);
+  v7_set_property(
+      v7, v7->array_prototype, "length", 6,
+      V7_PROPERTY_GETTER | V7_PROPERTY_SETTER | V7_PROPERTY_DONT_ENUM, length);
 }
 /*
  * Copyright (c) 2014 Cesanta Software Limited
@@ -14675,13 +14745,7 @@ DEFINE_WRAPPER(tan, m_one_arg)
 
 #if V7_ENABLE__Math__random
 V7_PRIVATE val_t Math_random(struct v7 *v7, val_t this_obj, val_t args) {
-  static int srand_called = 0;
-
-  if (!srand_called) {
-    srand((unsigned) (unsigned long) v7);
-    srand_called++;
-  }
-
+  (void) v7;
   (void) this_obj;
   (void) args;
   return v7_create_number((double) rand() / RAND_MAX);
@@ -14761,6 +14825,11 @@ V7_PRIVATE void init_math(struct v7 *v7) {
   set_cfunc_prop(v7, math, "pow", Math_pow);
 #endif
 #if V7_ENABLE__Math__random
+  /* Incorporate our pointer into the RNG.
+   * If srand() has not been called before, this will provide some randomness.
+   * If it has, it will hopefully not make things worse.
+   */
+  srand(rand() ^ ((uintptr_t) v7));
   set_cfunc_prop(v7, math, "random", Math_random);
 #endif
 #if V7_ENABLE__Math__round
@@ -15073,7 +15142,7 @@ static val_t Str_replace(struct v7 *v7, val_t this_obj, val_t args) {
         v7_array_push(v7, arr, v7_create_number(utfnlen(
                                    (char *) s, loot.caps[0].start - s)));
         v7_array_push(v7, arr, this_obj);
-        out_str_o = to_string(v7, v7_apply(v7, str_func, this_obj, arr));
+        out_str_o = to_string(v7, i_apply(v7, str_func, this_obj, arr));
         rez_str = v7_to_string(v7, &out_str_o, &rez_len);
         if (rez_len) {
           ptok->start = rez_str;
@@ -15284,7 +15353,7 @@ V7_PRIVATE long to_long(struct v7 *v7, val_t v, long default_value) {
   }
   if (v7_is_null(v)) return 0;
   l = to_str(v7, v, buf, sizeof(buf), 0);
-  if (l > 0 && isdigit(buf[0])) return strtol(buf, NULL, 10);
+  if (l > 0 && isdigit((int) buf[0])) return strtol(buf, NULL, 10);
   return default_value;
 }
 
@@ -16572,7 +16641,7 @@ static val_t Function_apply(struct v7 *v7, val_t this_obj, val_t args) {
   val_t f = i_value_of(v7, this_obj);
   val_t this_arg = v7_array_get(v7, args, 0);
   val_t func_args = v7_array_get(v7, args, 1);
-  return v7_apply(v7, f, this_arg, func_args);
+  return i_apply(v7, f, this_arg, func_args);
 }
 
 V7_PRIVATE void init_function(struct v7 *v7) {
@@ -16580,7 +16649,8 @@ V7_PRIVATE void init_function(struct v7 *v7) {
   v7_set_property(v7, ctor, "prototype", 9, 0, v7->function_prototype);
   v7_set_property(v7, v7->global_object, "Function", 8, 0, ctor);
   set_method(v7, v7->function_prototype, "apply", Function_apply, 1);
-  v7_set_property(v7, v7->function_prototype, "length", 6, V7_PROPERTY_GETTER,
+  v7_set_property(v7, v7->function_prototype, "length", 6,
+                  V7_PROPERTY_GETTER | V7_PROPERTY_DONT_ENUM,
                   v7_create_cfunction(Function_length));
 }
 /*
@@ -16901,7 +16971,9 @@ int v7_main(int argc, char *argv[], void (*init_func)(struct v7 *)) {
   /* Execute inline expressions */
   for (j = 0; j < nexprs; j++) {
     if (show_ast) {
-      v7_compile(exprs[j], binary_ast, stdout);
+      if (v7_compile(exprs[j], binary_ast, stdout) != V7_OK) {
+        fprintf(stderr, "%s\n", "parse error");
+      }
     } else if (v7_exec(v7, &res, exprs[j]) != V7_OK) {
       print_error(v7, exprs[j], res);
       res = v7_create_undefined();

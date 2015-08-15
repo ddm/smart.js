@@ -8,32 +8,44 @@
  * that uses the old (stable) non-RTOS ESP SDK networking.
  */
 
-#include "ets_sys.h"
-#include "osapi.h"
-#include "gpio.h"
-#include "os_type.h"
-#include "user_interface.h"
-#include "v7.h"
-#include "mem.h"
-#include "espconn.h"
+#include <ets_sys.h>
+#include <osapi.h>
+#include <gpio.h>
+#include <os_type.h>
+#include <user_interface.h>
+#include <v7.h>
+#include <mem.h>
+#include <espconn.h>
 #include <math.h>
 #include <stdlib.h>
+
+#include <sj_v7_ext.h>
 
 #include "util.h"
 #include "v7_esp.h"
 
+#ifdef ESP_SSL_KRYPTON
+#include "esp_ssl_krypton.h"
+#elif defined(ESP_SSL_SDK)
+/* Symbols required by axTLS but not used by us. */
+unsigned char *default_certificate;
+unsigned int default_certificate_len = 0;
+unsigned char *default_private_key;
+unsigned int default_private_key_len = 0;
+#endif
+
+/*
+ * TODO(alashkin): change all big (1024?) arrays to mbuf
+ */
 struct http_ctx {
   esp_tcp tcp;
   v7_val_t cb;
-  v7_val_t body;
+  char body_a[1024];
+  char is_secure;
   const char *method;
   char host[256];
   int port;
   char path[256];
-  /*
-   * It could be great to use mbuf here,
-   * but it is not exposed from v7.c
-   */
   char resp[1024];
   int resp_pos;
 };
@@ -77,25 +89,26 @@ static void http_connect_cb(void *arg) {
     buf = (char *) malloc(buflen);
     snprintf(buf, buflen, reqfmt, ctx->path);
   } else {
-    if (v7_is_string(ctx->body)) {
-      const char *const reqfmt =
-          "POST %s HTTP/1.0\r\ncontent-length: %d\r\n\r\n%s";
-      size_t len;
-      const char *body = v7_to_string(v7, &ctx->body, &len);
-      /* some space for content length and zero terminator */
-      int buflen = strlen(ctx->path) + strlen(reqfmt) + len + 10;
-      buf = (char *) malloc(buflen);
-      snprintf(buf, buflen, reqfmt, ctx->path, (int) len, body);
-      v7_disown(v7, &ctx->body);
-    } else {
-      fprintf(stderr, "body not a string\n");
-    }
+    /* TODO(alashkin): should we handle \0 in the middle of the body? */
+    const char *const reqfmt =
+        "POST %s HTTP/1.0\r\nContent-Length: %d\r\n\r\n%s";
+    size_t body_len = strlen(ctx->body_a);
+    /* some space for content length and zero terminator */
+    int buflen = strlen(ctx->path) + strlen(reqfmt) + body_len + 10;
+    buf = (char *) malloc(buflen);
+    snprintf(buf, buflen, reqfmt, ctx->path, (int) body_len, ctx->body_a);
   }
 
-  espconn_regist_recvcb(conn, http_recv_cb);
-  espconn_regist_sentcb(conn, http_sent_cb);
+  if (ctx->is_secure) {
+#ifdef ESP_SSL_KRYPTON
+    kr_secure_sent(conn, buf, strlen(buf));
+#elif defined(ESP_SSL_SDK)
+    espconn_secure_sent(conn, buf, strlen(buf));
+#endif
+  } else {
+    espconn_sent(conn, buf, strlen(buf));
+  }
 
-  espconn_sent(conn, buf, strlen(buf));
   free(buf);
 }
 
@@ -103,10 +116,8 @@ static void http_connect_cb(void *arg) {
 static void http_disconnect_cb(void *arg) {
   struct espconn *conn = (struct espconn *) arg;
   struct http_ctx *ctx = (struct http_ctx *) conn->proto.tcp;
-  v7_val_t data, cb_args;
   char *body;
   int i;
-  v7_val_t res;
 
   body = ctx->resp;
   for (i = 0; i + 3 < ctx->resp_pos; i++) {
@@ -116,43 +127,18 @@ static void http_disconnect_cb(void *arg) {
     }
   }
 
-  cb_args = v7_create_object(v7);
-  v7_own(v7, &cb_args);
-
-  data = v7_create_string(v7, body, ctx->resp_pos - (body - ctx->resp), 1);
-  v7_own(v7, &data);
+  sj_http_success_callback(v7, ctx->cb, body,
+                           ctx->resp_pos - (body - ctx->resp));
   http_free(conn);
-
-  v7_array_set(v7, cb_args, 0, ctx->cb);
-  v7_array_set(v7, cb_args, 1, data);
-  v7_disown(v7, &data);
-
-  if (v7_exec_with(v7, &res, "this[0](this[1])", cb_args) != V7_OK) {
-    v7_fprintln(stderr, v7, res);
-  }
-  v7_disown(v7, &cb_args);
-  v7_disown(v7, &ctx->cb);
 }
 
 /* Invoke user callback as cb(undefined, err_msg) */
 static void http_error_cb(void *arg, int8_t err) {
   struct espconn *conn = (struct espconn *) arg;
   struct http_ctx *ctx = (struct http_ctx *) conn->proto.tcp;
-  char err_msg[128];
-  v7_val_t res, cb_args;
 
-  cb_args = v7_create_object(v7);
-  v7_own(v7, &cb_args);
-
-  snprintf(err_msg, sizeof(err_msg), "connection error: %d\n", err);
-  v7_array_set(v7, cb_args, 0, ctx->cb);
-  v7_array_set(v7, cb_args, 1,
-               v7_create_string(v7, err_msg, sizeof(err_msg), 1));
+  sj_http_error_callback(v7, ctx->cb, err);
   http_free(conn);
-  if (v7_exec_with(v7, &res, "this[0](undefined, this[1])", cb_args) != V7_OK) {
-    v7_fprintln(stderr, v7, res);
-  }
-  v7_disown(v7, &cb_args);
 }
 
 /*
@@ -177,7 +163,6 @@ static void http_get_dns_cb(const char *name, ip_addr_t *ipaddr, void *arg) {
       v7_fprintln(stderr, v7, res);
     }
     v7_disown(v7, &cb_args);
-    v7_disown(v7, &ctx->body); /* body has not been sent yet */
     v7_disown(v7, &ctx->cb);
   } else {
     memcpy(conn->proto.tcp->remote_ip, &ipaddr->addr, 4);
@@ -187,41 +172,60 @@ static void http_get_dns_cb(const char *name, ip_addr_t *ipaddr, void *arg) {
     espconn_regist_connectcb(conn, http_connect_cb);
     espconn_regist_disconcb(conn, http_disconnect_cb);
     espconn_regist_reconcb(conn, http_error_cb);
-    espconn_connect(conn);
+    espconn_regist_recvcb(conn, http_recv_cb);
+    espconn_regist_sentcb(conn, http_sent_cb);
+
+    if (ctx->is_secure) {
+#ifdef ESP_SSL_KRYPTON
+      kr_secure_connect(conn);
+#elif defined(ESP_SSL_SDK)
+      espconn_secure_set_size(1, 5120); /* 5k buffer for client */
+      espconn_secure_connect(conn);
+#endif
+    } else {
+      espconn_connect(conn);
+    }
   }
 }
 
-static v7_val_t Http_call(struct v7 *v7, v7_val_t urlv, v7_val_t body,
-                          v7_val_t cb, const char *method) {
-  const char *url, *sep;
+int sj_http_call(struct v7 *v7, const char *url, const char *body,
+                 size_t body_len, const char *method, v7_val_t cb) {
+  const char *sep;
   char *psep;
-  size_t url_len;
-  struct espconn *client;
-  struct http_ctx *ctx;
 
-  if (!v7_is_string(urlv)) {
-    v7_throw(v7, "url is not a string");
-  }
+  struct espconn *client = NULL;
+  struct http_ctx *ctx = NULL;
 
-  client = (struct espconn *) malloc(sizeof(struct espconn));
+  client = (struct espconn *) calloc(1, sizeof(*client));
   if (client == NULL) {
     printf("malloc failed Http_get\n");
-    return v7_create_undefined();
+    goto err;
   }
   client->type = ESPCONN_TCP;
   client->state = ESPCONN_NONE;
-  ctx = (struct http_ctx *) calloc(sizeof(struct http_ctx), 1);
+  ctx = (struct http_ctx *) calloc(1, sizeof(*ctx));
   if (ctx == NULL) {
     printf("malloc failed Http_get\n");
-    free(client);
-    return v7_create_undefined();
+    goto err;
   }
 
   client->proto.tcp = (esp_tcp *) ctx;
-
-  url = v7_to_string(v7, &urlv, &url_len);
   if (memcmp(url, "http://", 7) == 0) {
     url += 7;
+    ctx->is_secure = 0;
+    ctx->port = 80;
+  } else if (memcmp(url, "https://", 8) == 0) {
+#if defined(ESP_SSL_KRYPTON) || defined(ESP_SSL_SDK)
+    url += 8;
+    ctx->is_secure = 1;
+    ctx->port = 443;
+#else
+    printf("HTTPS is not supported\n");
+    goto err;
+#endif
+  } else {
+    printf("unknown schema\n");
+    goto err;
   }
   ctx->host[0] = ctx->path[0] = '\0';
 
@@ -237,7 +241,6 @@ static v7_val_t Http_call(struct v7 *v7, v7_val_t urlv, v7_val_t body,
   strcpy(ctx->path, sep);
   if (strlen(sep) == 0) strcpy(ctx->path, "/");
 
-  ctx->port = 80;
   if ((psep = strchr(ctx->host, ':')) != NULL) {
     *psep++ = '\0'; /* chop off port from host */
     ctx->port = atoi(psep);
@@ -247,34 +250,23 @@ static v7_val_t Http_call(struct v7 *v7, v7_val_t urlv, v7_val_t body,
   ctx->cb = cb;
   /* to be disowned after invoking the callback */
   v7_own(v7, &ctx->cb);
-  ctx->body = body;
-  /* to be disowned after sending the request */
-  v7_own(v7, &ctx->body);
+
+  if (body != NULL) {
+    /* Keep last byte for \0 */
+    if (body_len > sizeof(ctx->body_a) - 1) {
+      fprintf(stderr, "Body too long");
+      return 0;
+    }
+    memset(ctx->body_a, 0, sizeof(ctx->body_a));
+    memcpy(ctx->body_a, body, body_len);
+  }
 
   espconn_gethostbyname(client, ctx->host, &probably_dns_ip, http_get_dns_cb);
 
-  return v7_create_undefined();
-}
+  return 1;
 
-static v7_val_t Http_get(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
-  v7_val_t urlv = v7_array_get(v7, args, 0);
-  v7_val_t cb = v7_array_get(v7, args, 1);
-  return Http_call(v7, urlv, v7_create_undefined(), cb, "GET");
-}
-
-static v7_val_t Http_post(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
-  v7_val_t urlv = v7_array_get(v7, args, 0);
-  v7_val_t body = v7_array_get(v7, args, 1);
-  v7_val_t cb = v7_array_get(v7, args, 2);
-  (void) this_obj;
-  return Http_call(v7, urlv, body, cb, "POST");
-}
-
-void v7_init_http_client(struct v7 *v7) {
-  v7_val_t http;
-
-  http = v7_create_object(v7);
-  v7_set(v7, v7_get_global_object(v7), "Http", 4, 0, http);
-  v7_set_method(v7, http, "get", Http_get);
-  v7_set_method(v7, http, "post", Http_post);
+err:
+  free(ctx);
+  free(client);
+  return 0;
 }
