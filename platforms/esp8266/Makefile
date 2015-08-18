@@ -19,7 +19,7 @@ SSL ?= None
 
 APP_MODULES := user spiffs
 APP_SRCS := $(notdir $(foreach m,$(APP_MODULES),$(wildcard $(m)/*.c))) \
-            sj_prompt.c v7.c sj_v7_ext.c sj_conf.c sj_simple_http.c sj_i2c_js.c
+            sj_prompt.c v7.c sj_v7_ext.c sj_conf.c sj_simple_http.c sj_i2c_js.c sj_spi_js.c
 
 VPATH = $(APP_MODULES) $(V7_PATH) $(SMARTJS_PATH)/src
 IPATH = $(VPATH) $(SDK_PATH)/include $(SDK_PATH)/include/json $(COMMON_PATH)
@@ -59,23 +59,16 @@ NO_Os_FLAGS= -fno-expensive-optimizations -fno-thread-jumps \
              -fno-schedule-insns -fno-schedule-insns2 -fno-strict-aliasing -fno-strict-overflow \
              -fno-tree-builtin-call-dce -fno-tree-switch-conversion -fno-tree-tail-merge \
              -fno-tree-pre -fno-tree-vrp
- 
-SHIMS = -Dprintf=c_printf -Dfprintf=c_ufprintf \
-        -DINVALID_FILE=-1 -Dc_file_t=int \
-        -Dc_fread=spiffs_fread -Dc_fwrite=spiffs_fwrite \
-        -Dc_fclose=spiffs_fclose -Dc_fopen=spiffs_fopen \
-	      -Dc_rename=spiffs_rename -Dc_remove=spiffs_remove  \
-        -Dc_fseek=spiffs_fseek -Dc_ftell=spiffs_ftell \
-        -Dc_rewind=spiffs_rewind -Dc_ferror=spiffs_ferror \
-        -Dhmac_sha1=v7_hmac_sha1 \
-	      -DNDEBUG
+
+SHIMS = -Dhmac_sha1=v7_hmac_sha1 \
+        -DNDEBUG
 
 # NDEBUG is required because we don't have an assert shim
 # TODO(mkm): make one
 
 FEATURES = -DV7_BUILD_PROFILE=1 -DV7_ENABLE_FILE -DV7_ESP_GDB_SERVER \
            -DV7_DISABLE_AST_TAG_NAMES -DV7_TEMP_OFF -DV7_ENABLE_GC \
-	         -DV7_ENABLE_COMPACTING_GC -DDISABLE_MD5 -DNO_LIBC \
+	         -DV7_ENABLE_COMPACTING_GC -DDISABLE_MD5 -DNO_BSD_SOCKETS \
 					 -DV7_ENABLE__Math -DV7_ENABLE__Math__random \
 					 -DV7_ENABLE__Memory__stats -DV7_ENABLE_SPIFFS \
 					 -DV7_ESP_FLASH_ACCESS_EMUL -DV7_FORCE_STRICT_MODE
@@ -186,7 +179,7 @@ $(APP_AR): $(OBJS)
 	$(Q) $(OBJCOPY) --rename-section .fast.text=.text $(APP_AR)
 	$(Q) $(OBJCOPY) --rename-section .rodata=.irom0.text $(APP_AR)
 	$(Q) $(OBJCOPY) --rename-section .rodata.str1.1=.irom0.text $(APP_AR)
-	
+
 # -- Compilation.
 
 define compile

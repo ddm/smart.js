@@ -5,6 +5,8 @@
 #include "sj_hal.h"
 #include "sj_i2c.h"
 
+#ifndef SJ_DISABLE_I2C
+
 /*
  * JS I2C API.
  *
@@ -97,13 +99,14 @@
  *   Nothing.
  */
 
-static const char s_i2c_conn_prop[] = "__connection";
+static const char s_i2c_conn_prop[] = "_conn";
 
 static v7_val_t i2cjs_ctor(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
   i2c_connection conn;
   conn = sj_i2c_create(v7, args);
 
   if (i2c_init(conn) < 0) {
+    sj_i2c_close(conn);
     v7_throw(v7, "Failed to initialize I2C library.");
   }
 
@@ -287,3 +290,10 @@ void init_i2cjs(struct v7 *v7) {
 
   v7_set(v7, v7_get_global_object(v7), "I2C", 3, 0, i2c_ctor);
 }
+
+#else
+
+void init_i2cjs(struct v7 *v7) {
+}
+
+#endif /* SJ_DISABLE_I2C */

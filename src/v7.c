@@ -950,7 +950,7 @@ int closedir(DIR *dir);
 struct dirent *readdir(DIR *dir);
 
 #else /* not _WIN32 */
-#ifndef NO_LIBC
+#if !defined(NO_LIBC) && !defined(NO_BSD_SOCKETS)
 #include <dirent.h>
 #include <fcntl.h>
 #include <netdb.h>
@@ -6495,10 +6495,6 @@ double _v7_infinity;
 double _v7_nan;
 #endif
 
-#ifdef NO_LIBC
-void fprint_str(FILE *fp, const char *str);
-#endif
-
 enum v7_type val_type(struct v7 *v7, val_t v) {
   int tag;
   if (v7_is_number(v)) {
@@ -7082,18 +7078,10 @@ void v7_fprint(FILE *f, struct v7 *v7, val_t v) {
   if (v7_is_string(v)) {
     size_t n;
     const char *s = v7_to_string(v7, &v, &n);
-#ifndef NO_LIBC
     fprintf(f, "%s", s);
-#else
-    fprint_str(f, s);
-#endif
   } else {
     char *s = v7_to_json(v7, v, buf, sizeof(buf));
-#ifndef NO_LIBC
     fprintf(f, "%s", s);
-#else
-    fprint_str(f, s);
-#endif
     if (buf != s) free(s);
   }
 }

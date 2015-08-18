@@ -12,11 +12,12 @@ V7_FEATURES = -DV7_BUILD_PROFILE=3 -DV7_ENABLE__Memory__stats \
 								   -DV7_ENABLE_GC -DV7_ENABLE_GC \
 								   -DV7_ENABLE_COMPACTING_GC -DDISABLE_MD5 \
 								   -DV7_ENABLE_FILE
+SJ_FEATURES =
 FOSSA_FEATURES =
 
 INCLUDES = $(V7_PATH) $(SRC_PATH) $(COMMON_PATH) $(FOSSA_PATH)
 APP_SRCS := $(notdir $(wildcard *.c)) v7.c sj_v7_ext.c sj_conf.c \
-			sj_simple_http.c fossa.c sj_i2c_js.c
+			sj_simple_http.c fossa.c sj_i2c_js.c sj_spi_js.c
 ADD_LIBS = m
 
 ifeq ($(OS),Windows_NT)
@@ -25,6 +26,9 @@ else
   ifeq ($(UNAME_S),Linux)
     ADD_LIBS += rt
   endif
+  ifneq ($(UNAME_S),Linux)
+		SJ_FEATURES += -DSJ_DISABLE_I2C -DSJ_DISABLE_SPI
+	endif
   ifeq "$(SSL)" "OpenSSL" 
     FOSSA_FEATURES += -DNS_ENABLE_SSL
     ADD_LIBS += ssl crypto
@@ -37,7 +41,7 @@ else
 Q := @
 endif
 
-CFLAGS ?= -O2 -Wall -g -Wno-pragmas -D_BSD_SOURCE $(V7_FEATURES) $(FOSSA_FEATURES) -Wno-unused-function
+CFLAGS ?= -O2 -Wall -g -Wno-pragmas -D_BSD_SOURCE $(V7_FEATURES) $(SJ_FEATURES) $(FOSSA_FEATURES) -Wno-unused-function
 
 INCDIRS = $(addprefix -I,$(INCLUDES))
 LIBS = $(addprefix -l,$(ADD_LIBS))
