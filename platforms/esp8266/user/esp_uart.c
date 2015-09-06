@@ -1,15 +1,30 @@
 #include <stdarg.h>
-
-#include "ets_sys.h"
-#include "osapi.h"
-#include "gpio.h"
-#include "os_type.h"
-#include "user_interface.h"
-#include "v7.h"
-#include "mem.h"
+#include <ets_sys.h>
+#include <v7.h>
 
 #include "esp_missing_includes.h"
 #include "esp_uart.h"
+#include "esp_gpio.h"
+
+#ifndef RTOS_SDK
+
+#include <osapi.h>
+#include <gpio.h>
+#include <os_type.h>
+#include <user_interface.h>
+#include <mem.h>
+
+#else
+
+#include <c_types.h>
+#include <eagle_soc.h>
+#include <pin_mux_register.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/queue.h>
+#include "disp_task.h"
+
+#endif /* RTOS_SDK */
 
 /* At this moment using uart #0 only */
 #define UART_MAIN 0
@@ -37,7 +52,11 @@ int c_vsnprintf(char *buf, size_t buf_size, const char *fmt, va_list ap);
 
 uart_process_char_t uart_process_char;
 volatile uart_process_char_t uart_interrupt_cb = NULL;
+
+#ifndef RTOS_SDK
 static os_event_t rx_task_queue[RXTASK_QUEUE_LEN];
+#endif
+
 static char rx_buf[RX_BUFFER_SIZE];
 static unsigned s_system_uartno = UART_MAIN;
 static unsigned debug_enabled = 0;
@@ -70,7 +89,11 @@ FAST static void rx_isr(void *param) {
     WRITE_PERI_REG(UART_CLEAR_INTR(UART_MAIN), UART_RXBUF_FULL | UART_RX_NEW);
     SET_PERI_REG_MASK(UART_CTRL_INTR(UART_MAIN), UART_RXBUF_FULL | UART_RX_NEW);
 
+#ifndef RTOS_SDK
     system_os_post(TASK_PRIORITY, 0, tail);
+#else
+    rtos_dispatch_char_handler(tail);
+#endif
   }
 }
 
@@ -112,7 +135,7 @@ int gdb_read_uart_buf(char *buf) {
 #endif
 
 static void uart_tx_char(unsigned uartno, char ch) {
-  while (true) {
+  while (1) {
     uint32 fifo_cnt =
         (READ_PERI_REG(UART_DATA_STATUS(uartno)) & 0x00FF0000) >> 16;
     if (fifo_cnt < 126) {
@@ -133,32 +156,46 @@ void uart_write(int fd, char *p, size_t len) {
   }
 }
 
-void rx_task(os_event_t *events) {
+void process_rx_buf(int tail) {
   static int head = 0;
-  int tail = events->par;
   int i;
-
-  if (events->sig != 0) {
-    return;
-  }
 
   for (i = head; i != tail; i = (i + 1) % RX_BUFFER_SIZE) {
     uart_process_char(rx_buf[i]);
   }
+
   head = tail;
 }
 
+#ifndef RTOS_SDK
+void rx_task(os_event_t *events) {
+  if (events->sig != 0) {
+    return;
+  }
+
+  process_rx_buf(events->par);
+}
+#endif /* RTOS_SDK */
+
 void uart_main_init(int baud_rate) {
+#ifndef RTOS_SDK
   system_os_task(rx_task, TASK_PRIORITY, rx_task_queue, RXTASK_QUEUE_LEN);
+#endif
 
   if (baud_rate != 0) {
     uart_div_modify(0, UART_CLK_FREQ / baud_rate);
   }
 
+#ifndef RTOS_SDK
   ETS_UART_INTR_ATTACH(rx_isr, 0);
-  ETS_UART_INTR_ENABLE();
+#else
+  _xt_isr_attach(ETS_UART_INUM, rx_isr, 0);
+#endif
+
+  gpio_enable_intr(ETS_UART_INUM);
 }
 
+#ifndef RTOS_TODO
 static void uart_system_tx_char(char ch) {
   if (ch == '\n') {
     uart_tx_char(s_system_uartno, '\r');
@@ -167,6 +204,7 @@ static void uart_system_tx_char(char ch) {
     uart_tx_char(s_system_uartno, ch);
   }
 }
+#endif
 
 int uart_redirect_debug(int mode) {
   switch (mode) {
@@ -181,7 +219,10 @@ int uart_redirect_debug(int mode) {
     default:
       return -1;
   }
+
+#ifndef RTOS_TODO
   system_set_os_print(debug_enabled);
+#endif
 
   return 0;
 }
@@ -201,5 +242,7 @@ void uart_debug_init(unsigned periph, unsigned baud_rate) {
   /* Magic: set 8-N-1 mode */
   WRITE_PERI_REG(UART_CONF_TX(UART_DEBUG), 0xC);
 
+#ifndef RTOS_TODO
   os_install_putc1((void *) uart_system_tx_char);
+#endif
 }

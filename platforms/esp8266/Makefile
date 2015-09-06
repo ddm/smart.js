@@ -1,32 +1,38 @@
 XTENSA_TOOLS_ROOT ?= /opt/Espressif/crosstool-NG/builds/xtensa-lx106-elf/bin
 SDK_PATH ?= /opt/Espressif/ESP8266_SDK
 V7_PATH ?= ../../src
+FOSSA_PATH ?= ../../../fossa
 COMMON_PATH ?= ../../src
 SMARTJS_PATH ?= ../..
 KRYPTON_PATH ?= ../../../krypton
+SPIFFS_PATH ?= ../../src/spiffs
 ESPTOOL	?= esptool.py
 ESPPORT	?= /dev/ttyACM0
 ESPSPEED	?= 230400
 VERBOSE ?= 0
+# Should be RTOS or OSS
+SDK = OSS
 
 BUILD_DIR = build
 TOOLS_DIR = tools
+COMMON_TOOLS_DIR ?= ../../tools
 FW_DIR = firmware
 FS_DIR = fs
 APP = smartjs
 # SSL can be SDK or Krypton
 SSL ?= None
 
-APP_MODULES := user spiffs
+APP_MODULES := user $(SPIFFS_PATH)
 APP_SRCS := $(notdir $(foreach m,$(APP_MODULES),$(wildcard $(m)/*.c))) \
-            sj_prompt.c v7.c sj_v7_ext.c sj_conf.c sj_simple_http.c sj_i2c_js.c sj_spi_js.c
+            sj_prompt.c v7.c sj_v7_ext.c sj_conf.c sj_simple_http.c \
+            sj_i2c_js.c sj_spi_js.c sj_wifi.c sj_gpio_js.c
 
-VPATH = $(APP_MODULES) $(V7_PATH) $(SMARTJS_PATH)/src
+VPATH = $(APP_MODULES) $(V7_PATH) $(FOSSA_PATH) $(SMARTJS_PATH)/src
 IPATH = $(VPATH) $(SDK_PATH)/include $(SDK_PATH)/include/json $(COMMON_PATH)
 LPATH = $(SDK_PATH)/lib
 
 # libraries used in this project, mainly provided by the SDK
-APP_LIBS = m cirom gcc hal pp phy net80211 lwip wpa main
+APP_LIBS = cirom gcc hal pp phy net80211 lwip wpa main
 
 # linker script used for the above linkier step
 LD_SCRIPT	= user/eagle.app.30000.v6.ld
@@ -67,21 +73,28 @@ SHIMS = -Dhmac_sha1=v7_hmac_sha1 \
 # TODO(mkm): make one
 
 FEATURES = -DV7_BUILD_PROFILE=1 -DV7_ENABLE_FILE -DV7_ESP_GDB_SERVER \
-           -DV7_DISABLE_AST_TAG_NAMES -DV7_TEMP_OFF -DV7_ENABLE_GC \
+           -DV7_DISABLE_AST_TAG_NAMES -DV7_TEMP_OFF \
 	         -DV7_ENABLE_COMPACTING_GC -DDISABLE_MD5 -DNO_BSD_SOCKETS \
 					 -DV7_ENABLE__Math -DV7_ENABLE__Math__random \
 					 -DV7_ENABLE__Memory__stats -DV7_ENABLE_SPIFFS \
-					 -DV7_ESP_FLASH_ACCESS_EMUL -DV7_FORCE_STRICT_MODE
+					 -DV7_ESP_FLASH_ACCESS_EMUL -DV7_FORCE_STRICT_MODE \
+					 -DV7_ENABLE__File__list=1 -DV7_ENABLE__StackTrace=1
+
+FOSSA_FEATURES = -DNS_DISABLE_HTTP_WEBSOCKET -DNS_DISABLE_MQTT -DNS_DISABLE_SHA1 -DNS_DISABLE_MD5 \
+				 -DNS_DISABLE_JSON_RPC -DNS_DISABLE_SOCKETPAIR -DNS_DISABLE_DAV \
+				 -DNS_DISABLE_DIRECTORY_LISTING -DNS_DISABLE_CGI \
+				 -DNS_DISABLE_FILESYSTEM
 
 MEMORY_FLAGS = -DMBUF_SIZE_MULTIPLIER=1 -DV7_STACK_SIZE=8192-64 -DFS_MAX_OPEN_FILES=5
 
 # compiler flags using during compilation of source files
-CFLAGS = -Wall -Os $(NO_Os_FLAGS) -g3 -Wpointer-arith -Wl,-EL -fno-inline-functions \
+CFLAGS = -Wall -Werror -Os $(NO_Os_FLAGS) -g3 -Wpointer-arith -Wl,-EL -fno-inline-functions \
          -nostdlib -mlongcalls -mtext-section-literals  -D__ets__ -DSTATIC=static \
-         -DICACHE_FLASH \
+         -Wno-parentheses -DICACHE_FLASH -DNS_ESP8266 \
          -DFAST='__attribute__((section(".fast.text")))' \
          -DFS_ADDR=$(FW_FS_ADDR) -DFS_SIZE=$(FW_FS_SIZE) \
-         $(MEMORY_FLAGS) $(SHIMS) $(FEATURES) $(CFLAGS_EXTRA)
+         $(MEMORY_FLAGS) $(SHIMS) $(FEATURES) $(CFLAGS_EXTRA) \
+		 $(FOSSA_FEATURES)
 
 ##
 ## == No config vars beyond this point.
@@ -96,8 +109,33 @@ else ifeq "$(SSL)" "Krypton"
 IPATH += $(KRYPTON_PATH)
 VPATH += $(KRYPTON_PATH)
 APP_SRCS += krypton.c
-FEATURES += -DESP_SSL_KRYPTON -DKR_EXT_IO -DKR_EXT_RANDOM -DKR_EXT_MD5 -DKR_EXT_SHA1
-#-DKRYPTON_DEBUG -DESP_SSL_KRYPTON_DEBUG
+FEATURES += -DESP_SSL_KRYPTON -DKR_EXT_IO -DKR_EXT_RANDOM -DKR_EXT_MD5 -DKR_EXT_SHA1 -DKRYPTON_DEBUG -DESP_SSL_KRYPTON_DEBUG
+endif
+
+CC := $(XTENSA_TOOLS_ROOT)/xtensa-lx106-elf-gcc
+AR := $(XTENSA_TOOLS_ROOT)/xtensa-lx106-elf-ar
+LD := $(XTENSA_TOOLS_ROOT)/xtensa-lx106-elf-gcc
+OBJCOPY := $(XTENSA_TOOLS_ROOT)/xtensa-lx106-elf-objcopy
+# Temp solution for RTOS SDK
+OBJCOPY2 = $(OBJCOPY)
+
+ifeq "$(SDK)" "RTOS"
+IPATH += $(SDK_PATH)/include/espressif/esp8266 $(SDK_PATH)/include/espressif \
+		 $(SDK_PATH)/include/lwip $(SDK_PATH)/include/lwip/ipv4 \
+		 $(SDK_PATH)/include/lwip/ipv6 $(SDK_PATH)/extra_include \
+		 $(SDK_PATH)/lwip/include/
+		 
+APP_SRCS += fossa.c sj_fossa_http_client.c \
+			sj_simple_http.c sj_fossa.c
+			
+APP_LIBS += freertos mirom
+FEATURES += -DDISABLE_SHA1
+CFLAGS += -DRTOS_SDK -DRTOS_TODO
+OBJCOPY2 = /bin/true
+#TODO(alashkin): try to use the same LD script
+LD_SCRIPT = user/eagle.app.v6.RTOS.ld
+else
+APP_LIBS += m
 endif
 
 APP_OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(APP_SRCS))
@@ -115,11 +153,6 @@ FS_FILES = $(wildcard $(FS_DIR)/*)
 
 INCDIRS = $(addprefix -I,$(IPATH))
 LIBDIRS = $(addprefix -L,$(LPATH))
-
-CC := $(XTENSA_TOOLS_ROOT)/xtensa-lx106-elf-gcc
-AR := $(XTENSA_TOOLS_ROOT)/xtensa-lx106-elf-ar
-LD := $(XTENSA_TOOLS_ROOT)/xtensa-lx106-elf-gcc
-OBJCOPY := $(XTENSA_TOOLS_ROOT)/xtensa-lx106-elf-objcopy
 
 V ?= $(VERBOSE)
 ifeq ("$(V)","1")
@@ -177,8 +210,8 @@ $(APP_AR): $(OBJS)
 	$(Q) $(AR) cru $@ $^
 	$(Q) $(OBJCOPY) --rename-section .text=.irom0.text $(APP_AR)
 	$(Q) $(OBJCOPY) --rename-section .fast.text=.text $(APP_AR)
-	$(Q) $(OBJCOPY) --rename-section .rodata=.irom0.text $(APP_AR)
-	$(Q) $(OBJCOPY) --rename-section .rodata.str1.1=.irom0.text $(APP_AR)
+	$(Q) $(OBJCOPY2) --rename-section .rodata=.irom0.text $(APP_AR)
+	$(Q) $(OBJCOPY2) --rename-section .rodata.str1.1=.irom0.text $(APP_AR)
 
 # -- Compilation.
 
@@ -194,6 +227,9 @@ $(BUILD_DIR)/%.o: %.c
 # This one is for generated sources in build directory.
 $(BUILD_DIR)/%.o: $(BUILD_DIR)/%.c
 	$(compile)
+
+$(BUILD_DIR)/fossa.o: fossa.c
+	$(compile) -DEXCLUDE_COMMON
 
 # Generate version. Only regenrates if there are changes in objects.
 $(BUILD_DIR)/sj_version.c: $(APP_OBJS)
@@ -212,10 +248,13 @@ $(FW_FS_OUT): $(FS_FILES) $(BUILD_DIR)/mkspiffs
 	$(vecho) "MKSPIFFS $(FS_DIR) -> $@"
 	$(Q) $(BUILD_DIR)/mkspiffs $(FW_FS_SIZE) $(FS_DIR) > $@
 
-$(BUILD_DIR)/mkspiffs: $(TOOLS_DIR)/mkspiffs.c $(wildcard spiffs/*.c)
+$(BUILD_DIR)/mkspiffs: $(COMMON_TOOLS_DIR)/mkspiffs.c $(wildcard $(SPIFFS_PATH)/*.c)
 	$(vecho) "GCC mkspiffs"
-	$(Q) gcc -I. -o $@ $^ -DNO_ESP
+	$(Q) gcc -I. -I$(SPIFFS_PATH) -Iuser -o $@ $^ -DNO_ESP
 
+# Target specific warning inhibitions
+
+build/spiffs_hydrogen.o: CFLAGS += -Wno-unused-function
 
 #
 # Auxiliary targets.

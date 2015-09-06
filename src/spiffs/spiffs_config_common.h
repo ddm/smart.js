@@ -5,33 +5,8 @@
  *      Author: petera
  */
 
-#ifndef SPIFFS_CONFIG_H_
-#define SPIFFS_CONFIG_H_
-
-// ----------- 8< ------------
-// Following includes are for the linux test build of spiffs
-// These may/should/must be removed/altered/replaced in your target
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stddef.h>
-#ifndef NO_ESP
-#include "ets_sys.h"
-#include "osapi.h"
-#include "os_type.h"
-#include "mem.h"
-#else
-#include <stdint.h>
-#endif
-// ----------- >8 ------------
-typedef int32_t s32_t;
-typedef uint32_t u32_t;
-typedef int16_t s16_t;
-typedef uint16_t u16_t;
-typedef int8_t s8_t;
-typedef uint8_t u8_t;
-
-// ----------- >8 ------------
+#ifndef SPIFFS_CONFIG_COMMON_H_
+#define SPIFFS_CONFIG_COMMON_H_
 
 // compile time switches
 
@@ -229,4 +204,4 @@ typedef u16_t spiffs_obj_id;
 // i.e. (spiffs_file_system_size / log_page_size) - 1
 typedef u16_t spiffs_span_ix;
 
-#endif /* SPIFFS_CONFIG_H_ */
+#endif /* SPIFFS_CONFIG_COMMON_H_ */

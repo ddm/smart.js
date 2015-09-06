@@ -4,8 +4,10 @@
 SDK_PATH ?= /cc3200-sdk
 V7_PATH ?= ../../../v7
 SMARTJS_PATH ?= ../..
+FOSSA_PATH ?= ../../../fossa
 OBJDIR = build
 BINDIR = firmware
+FW_FS_SIZE = 65536
 
 include ${SDK_PATH}/tools/gcc_scripts/makedefs
 
@@ -13,22 +15,35 @@ include ${SDK_PATH}/tools/gcc_scripts/makedefs
 
 PROG = smartjs
 
-IPATH = ${SDK_PATH} \
+IPATH = . ${SDK_PATH} \
         ${SDK_PATH}/inc \
         ${SDK_PATH}/driverlib \
+        ${SDK_PATH}/oslib \
+        ${SDK_PATH}/simplelink \
+        ${SDK_PATH}/simplelink/include \
         ${SMARTJS_PATH}/src \
+        ${SMARTJS_PATH}/src/spiffs \
+        ${FOSSA_PATH} \
         ${V7_PATH}
 
-VPATH = ${SDK_PATH}/example/common \
+VPATH = ${SDK_PATH}/driverlib \
+        ${SDK_PATH}/simplelink \
+        ${SDK_PATH}/simplelink/source \
         ${SMARTJS_PATH}/src \
-        ${V7_PATH}
+        ${SMARTJS_PATH}/src/spiffs \
+        ${V7_PATH} \
+        ${FOSSA_PATH}
 
-V7_FEATURES = -DV7_BUILD_PROFILE=1 \
-              -DV7_DISABLE_AST_TAG_NAMES -DV7_ENABLE_GC \
-              -DV7_ENABLE_COMPACTING_GC -DDISABLE_MD5 -DNO_LIBC \
+V7_FEATURES = -DV7_BUILD_PROFILE=1 -DV7_DISABLE_AST_TAG_NAMES \
+              -DV7_ENABLE_COMPACTING_GC -DDISABLE_MD5 \
               -DV7_ENABLE__Math -DV7_ENABLE__Math__random \
               -DV7_ENABLE__Memory__stats -DV7_FORCE_STRICT_MODE \
-              -DV7_NO_FS
+              -DV7_ENABLE_FILE -DV7_ENABLE__StackTrace
+
+FOSSA_FEATURES = -DNS_CC3200 -DNS_DISABLE_DIRECTORY_LISTING -DNS_DISABLE_DAV \
+                 -DNS_DISABLE_SSI -DNS_DISABLE_FILESYSTEM -DNS_DISABLE_SOCKETPAIR \
+                 -DNS_DISABLE_CGI
+#-DNS_ENABLE_DEBUG
 
 # -DV7_TEMP_OFF
 #-DV7_ENABLE_FILE -DV7_ESP_GDB_SERVER \
@@ -36,15 +51,20 @@ V7_FEATURES = -DV7_BUILD_PROFILE=1 \
 #-DV7_ESP_FLASH_ACCESS_EMUL
 
 V7_MEMORY_FLAGS = -DMBUF_SIZE_MULTIPLIER=1 \
-                  -DV7_STACK_SIZE=8192 -DV7_DISABLE_INTERPRETER_STACK_CHECK \
+                  -DV7_STACK_SIZE=16384 -DV7_DISABLE_INTERPRETER_STACK_CHECK \
                   -DFS_MAX_OPEN_FILES=5
 
-CFLAGS += -DUSE_FREERTOS ${V7_FEATURES} ${V7_MEMORY_FLAGS} -Dc_file_t=int -Os
+SDK_FLAGS = -DTARGET_IS_CC3200 -DUSE_FREERTOS -DSL_PLATFORM_MULTI_THREADED
+
+DISABLED_SDK_WARNINGS = -Wno-missing-braces -Wno-strict-aliasing -Wno-parentheses -Wno-unused-variable
+
+CFLAGS += -Os -Wall -Werror $(SDK_FLAGS) ${V7_FEATURES} ${V7_MEMORY_FLAGS} ${FOSSA_FEATURES} ${CFLAGS_EXTRA}
+# CFLAGS += -DCC3200_FS_DEBUG
 
 .PHONY: all clean flash
 
 all: ${OBJDIR} ${BINDIR}
-all: ${BINDIR}/${PROG}.axf
+all: ${BINDIR}/${PROG}.axf ${BINDIR}/fs.img
 
 clean:
 	@rm -rf ${OBJDIR} ${wildcard *~}
@@ -56,11 +76,35 @@ ${OBJDIR}:
 ${BINDIR}:
 	@mkdir -p ${BINDIR}
 
+${OBJDIR}/fossa.o: ${FOSSA_PATH}/fossa.c
+	${CC} ${CFLAGS} -DEXCLUDE_COMMON -D${COMPILER} -o ${@} ${<}
+
 ${BINDIR}/${PROG}.axf: ${OBJDIR}/main.o
-${BINDIR}/${PROG}.axf: ${OBJDIR}/libc_replacements.o ${OBJDIR}/v7.o
-${BINDIR}/${PROG}.axf: ${OBJDIR}/sj_prompt.o ${OBJDIR}/sj_hal_cc3200.o
-${BINDIR}/${PROG}.axf: ${OBJDIR}/startup_${COMPILER}.o
-${BINDIR}/${PROG}.axf: ${SDK_PATH}/driverlib/${COMPILER}/exe/libdriver.a
-${BINDIR}/${PROG}.axf: ${SDK_PATH}/oslib/${COMPILER}/exe/FreeRTOS.a
+${BINDIR}/${PROG}.axf: ${OBJDIR}/cc3200_fs.o ${OBJDIR}/cc3200_fs_spiffs.o ${OBJDIR}/cc3200_fs_spiffs_container.o ${OBJDIR}/cc3200_fs_failfs.o
+${BINDIR}/${PROG}.axf: ${OBJDIR}/cc3200_leds.o ${OBJDIR}/cc3200_libc.o
+${BINDIR}/${PROG}.axf: ${OBJDIR}/cc3200_sj_hal.o ${OBJDIR}/cc3200_socket.o ${OBJDIR}/cc3200_wifi.o
+${BINDIR}/${PROG}.axf: ${OBJDIR}/v7.o
+${BINDIR}/${PROG}.axf: ${OBJDIR}/sj_simple_http.o ${OBJDIR}/sj_wifi.o ${OBJDIR}/sj_prompt.o
+${BINDIR}/${PROG}.axf: ${OBJDIR}/sj_fossa.o ${OBJDIR}/sj_fossa_http_client.o ${OBJDIR}/sj_v7_ext.o
+${BINDIR}/${PROG}.axf: ${OBJDIR}/spiffs_cache.o ${OBJDIR}/spiffs_check.o ${OBJDIR}/spiffs_gc.o ${OBJDIR}/spiffs_hydrogen.o ${OBJDIR}/spiffs_nucleus.o
+${BINDIR}/${PROG}.axf: ${OBJDIR}/fossa.o
+${BINDIR}/${PROG}.axf: ${OBJDIR}/startup_gcc.o
+# SimpleLink
+${BINDIR}/${PROG}.axf: ${OBJDIR}/socket.o ${OBJDIR}/wlan.o ${OBJDIR}/driver.o ${OBJDIR}/device.o ${OBJDIR}/netapp.o ${OBJDIR}/cc_pal.o ${OBJDIR}/fs.o
+# DriverLib
+${BINDIR}/${PROG}.axf: ${OBJDIR}/cpu.o ${OBJDIR}/gpio.o ${OBJDIR}/interrupt.o ${OBJDIR}/pin.o ${OBJDIR}/prcm.o ${OBJDIR}/spi.o ${OBJDIR}/uart.o ${OBJDIR}/udma.o ${OBJDIR}/utils.o
+${BINDIR}/${PROG}.axf: ${SDK_PATH}/oslib/gcc/exe/FreeRTOS.a
 SCATTERgcc_${PROG} = ${PROG}.ld
 ENTRY_${PROG} = ResetISR
+
+${BINDIR}/fs.img: ${wildcard fs/*}
+	/usr/local/bin/mkspiffs ${FW_FS_SIZE} fs > $@
+
+# Target specific warning inhibitions
+
+build/wlan.o: CFLAGS += $(DISABLED_SDK_WARNINGS)
+build/driver.o: CFLAGS += $(DISABLED_SDK_WARNINGS)
+build/fs.o: CFLAGS += $(DISABLED_SDK_WARNINGS)
+build/spi.o: CFLAGS += $(DISABLED_SDK_WARNINGS)
+build/prcm.o: CFLAGS += $(DISABLED_SDK_WARNINGS)
+build/spiffs_hydrogen.o: CFLAGS += -Wno-unused-function

@@ -1,29 +1,38 @@
-#include <ets_sys.h>
-#include <osapi.h>
-#include <gpio.h>
-#include <os_type.h>
-#include <user_interface.h>
-#include <v7.h>
-#include <sha1.h>
-#include <mem.h>
-#include <espconn.h>
 #include <math.h>
 #include <stdlib.h>
-
+#include <string.h>
+#include <ets_sys.h>
+#include <v7.h>
 #include <sj_hal.h>
 #include <sj_v7_ext.h>
 #include <sj_conf.h>
 #include <sj_i2c_js.h>
 #include <sj_spi_js.h>
-
+#include <sj_gpio_js.h>
 #include "v7_esp.h"
 #include "dht11.h"
 #include "util.h"
 #include "v7_esp_features.h"
 #include "esp_uart.h"
-#include "esp_wifi.h"
-#include "v7_gpio_js.h"
+#include "esp_sj_wifi.h"
 #include "esp_data_gen.h"
+
+#ifndef RTOS_SDK
+
+#include <osapi.h>
+#include <gpio.h>
+#include <os_type.h>
+#include <user_interface.h>
+#include <sha1.h>
+#include <mem.h>
+#include <espconn.h>
+
+#else
+
+#include <esp_system.h>
+#include <sj_fossa.h>
+
+#endif /* RTOS_SDK */
 
 struct v7 *v7;
 
@@ -133,6 +142,7 @@ static v7_val_t crash(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
 }
 
 void esp_init_conf(struct v7 *v7) {
+#ifndef RTOS_TODO
   int valid;
   unsigned char sha[20];
   SHA1_CTX ctx;
@@ -144,6 +154,9 @@ void esp_init_conf(struct v7 *v7) {
   valid = (memcmp(V7_DEV_CONF_SHA1, sha, 20) == 0);
 
   sj_init_conf(v7, valid ? V7_DEV_CONF_STR : NULL);
+#else
+  sj_init_conf(v7, NULL);
+#endif
 }
 
 void init_v7(void *stack_base) {
@@ -154,7 +167,6 @@ void init_v7(void *stack_base) {
   opts.function_arena_size = 26;
   opts.property_arena_size = 400;
   opts.c_stack_base = stack_base;
-
   v7 = v7_create_opt(opts);
 
   v7_set_method(v7, v7_get_global_object(v7), "dsleep", dsleep);
@@ -164,6 +176,8 @@ void init_v7(void *stack_base) {
   dht11 = v7_create_object(v7);
   v7_set(v7, v7_get_global_object(v7), "DHT11", 5, 0, dht11);
   v7_set_method(v7, dht11, "read", DHT11_read);
+#else
+  (void) dht11;
 #endif /* V7_ESP_ENABLE__DHT11 */
 
   debug = v7_create_object(v7);
@@ -171,16 +185,25 @@ void init_v7(void *stack_base) {
   v7_set_method(v7, debug, "mode", Debug_mode);
   v7_set_method(v7, debug, "print", Debug_print);
 
-  sj_init_simple_http_client(v7);
-
   sj_init_v7_ext(v7);
-  init_i2cjs(v7);
+
   init_gpiojs(v7);
+  init_i2cjs(v7);
   init_spijs(v7);
+
   init_wifi(v7);
+
+#ifndef RTOS_TODO
   init_data_gen_server(v7);
+#endif
 
   esp_init_conf(v7);
+
+#ifdef RTOS_SDK
+  fossa_init();
+#endif
+
+  sj_init_simple_http_client(v7);
 
   v7_gc(v7, 1);
 }

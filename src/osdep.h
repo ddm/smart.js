@@ -10,12 +10,14 @@
 #define NS_DISABLE_FILESYSTEM
 #endif
 
-#undef UNICODE                  /* Use ANSI WinAPI functions */
-#undef _UNICODE                 /* Use multibyte encoding on Windows */
-#define _MBCS                   /* Use multibyte encoding on Windows */
-#define _INTEGRAL_MAX_BITS 64   /* Enable _stati64() on Windows */
+#undef UNICODE                /* Use ANSI WinAPI functions */
+#undef _UNICODE               /* Use multibyte encoding on Windows */
+#define _MBCS                 /* Use multibyte encoding on Windows */
+#define _INTEGRAL_MAX_BITS 64 /* Enable _stati64() on Windows */
+#ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS /* Disable deprecation warning in VS2005+ */
-#undef WIN32_LEAN_AND_MEAN      /* Let windows.h always include winsock2.h */
+#endif
+#undef WIN32_LEAN_AND_MEAN /* Let windows.h always include winsock2.h */
 #undef _XOPEN_SOURCE
 #define _XOPEN_SOURCE 600    /* For flockfile() on Linux */
 #define __STDC_FORMAT_MACROS /* <inttypes.h> wants this for C++ */
@@ -124,10 +126,17 @@ typedef unsigned __int64 uint64_t;
 typedef __int64 int64_t;
 typedef SOCKET sock_t;
 typedef uint32_t in_addr_t;
+#ifndef UINT16_MAX
+#define UINT16_MAX 65535
+#endif
+#ifndef UINT32_MAX
+#define UINT32_MAX 4294967295
+#endif
 #ifndef pid_t
 #define pid_t HANDLE
 #endif
 #define INT64_FMT "I64d"
+#define SIZE_T_FMT "Iu"
 #ifdef __MINGW32__
 typedef struct stat ns_stat_t;
 #else
@@ -153,8 +162,24 @@ DIR *opendir(const char *name);
 int closedir(DIR *dir);
 struct dirent *readdir(DIR *dir);
 
-#else /* not _WIN32 */
-#if !defined(NO_LIBC) && !defined(NO_BSD_SOCKETS)
+#elif /* not _WIN32 */ defined(NS_CC3200)
+
+#include <fcntl.h>
+#include <unistd.h>
+#include <cc3200_libc.h>
+#include <cc3200_socket.h>
+
+#elif /* not CC3200 */ defined(NS_ESP8266) && defined(RTOS_SDK)
+
+#include <lwip/sockets.h>
+#include <lwip/netdb.h>
+#include <lwip/dns.h>
+/* TODO(alashkin): check if zero is OK */
+#define SOMAXCONN 0
+#include <stdlib.h>
+
+#elif /* not ESP8266 RTOS */ !defined(NO_LIBC) && !defined(NO_BSD_SOCKETS)
+
 #include <dirent.h>
 #include <fcntl.h>
 #include <netdb.h>
@@ -165,73 +190,50 @@ struct dirent *readdir(DIR *dir);
 #include <sys/socket.h>
 #include <sys/select.h>
 #endif
+
+#ifndef _WIN32
 #include <errno.h>
 #include <inttypes.h>
 #include <stdarg.h>
+
 #ifndef AVR_LIBC
+#ifndef NS_ESP8266
 #define closesocket(x) close(x)
+#endif
 #ifndef __cdecl
 #define __cdecl
 #endif
+
 #define INVALID_SOCKET (-1)
 #define INT64_FMT PRId64
+#define SIZE_T_FMT "zu"
 #define to64(x) strtoll(x, NULL, 10)
 typedef int sock_t;
 typedef struct stat ns_stat_t;
 #define DIRSEP '/'
-#endif
+#endif /* !AVR_LIBC */
+
 #ifdef __APPLE__
 int64_t strtoll(const char *str, char **endptr, int base);
 #endif
-#endif /* _WIN32 */
+#endif /* !_WIN32 */
 
-#ifdef NS_ENABLE_DEBUG
-#define DBG(x)                  \
+#define __DBG(x)                \
   do {                          \
     printf("%-20s ", __func__); \
     printf x;                   \
     putchar('\n');              \
     fflush(stdout);             \
   } while (0)
+
+#ifdef NS_ENABLE_DEBUG
+#define DBG __DBG
 #else
 #define DBG(x)
 #endif
 
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof(array[0]))
-#endif
-
-#if !defined(NO_LIBC) && !defined(NS_DISABLE_FILESYSTEM)
-typedef FILE *c_file_t;
-/*
- * Cannot use fopen & Co directly and
- * override them with -D because
- * these overrides conflicts with
- * functions in stdio.h
- */
-#define c_fopen fopen
-#define c_fread fread
-#define c_fwrite fwrite
-#define c_fclose fclose
-#define c_rename rename
-#define c_remove remove
-#define c_fseek fseek
-#define c_ftell ftell
-#define c_rewind rewind
-#define c_ferror ferror
-#define INVALID_FILE NULL
-#else
-/*
- * TODO(alashkin): move to .h file (v7.h?)
- */
-c_file_t c_fopen(const char *filename, const char *mode);
-size_t c_fread(void *ptr, size_t size, size_t count, c_file_t fd);
-size_t c_fwrite(const void *ptr, size_t size, size_t count, c_file_t fd);
-int c_fclose(c_file_t fd);
-int c_rename(const char *oldname, const char *newname);
-int c_remove(const char *filename);
-void c_rewind(c_file_t fd);
-int c_ferror(c_file_t fd);
 #endif
 
 #endif /* OSDEP_HEADER_INCLUDED */

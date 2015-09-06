@@ -1,3 +1,5 @@
+#include "sj_v7_ext.h"
+
 #include <string.h>
 #include <v7.h>
 #include "sj_hal.h"
@@ -112,14 +114,41 @@ static v7_val_t GC_gc(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
   return v7_create_undefined();
 }
 
-void sj_call_function(struct v7 *v7, void *arg) {
-  v7_val_t *cb = (v7_val_t *) arg;
+void _sj_invoke_cb(struct v7 *v7, v7_val_t func, v7_val_t this_obj,
+                   v7_val_t args) {
   v7_val_t res;
-  if (v7_exec_with(v7, &res, "this()", *cb) != V7_OK) {
+  if (v7_apply(v7, &res, func, this_obj, args) == V7_EXEC_EXCEPTION) {
+    fprintf(stderr, "cb threw exception: ");
     v7_fprintln(stderr, v7, res);
+#if V7_ENABLE__StackTrace
+    v7_fprint_stack_trace(stderr, v7, res);
+#endif
   }
-  v7_disown(v7, cb);
-  free(arg);
+}
+
+void sj_invoke_cb2(struct v7 *v7, v7_val_t cb, v7_val_t arg1, v7_val_t arg2) {
+  v7_val_t args;
+  v7_own(v7, &cb);
+  v7_own(v7, &arg1);
+  v7_own(v7, &arg2);
+
+  args = v7_create_array(v7);
+  v7_own(v7, &args);
+  v7_array_push(v7, args, arg1);
+  v7_array_push(v7, args, arg2);
+  sj_invoke_cb(v7, cb, v7_get_global_object(v7), args);
+  v7_disown(v7, &args);
+  v7_disown(v7, &arg2);
+  v7_disown(v7, &arg1);
+  v7_disown(v7, &cb);
+}
+
+void sj_invoke_cb1(struct v7 *v7, v7_val_t cb, v7_val_t arg) {
+  sj_invoke_cb2(v7, cb, arg, v7_create_undefined());
+}
+
+void sj_invoke_cb0(struct v7 *v7, v7_val_t cb) {
+  sj_invoke_cb2(v7, cb, v7_create_undefined(), v7_create_undefined());
 }
 
 /* Currently can only handle one timer */

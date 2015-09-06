@@ -1,23 +1,37 @@
 #ifdef V7_ESP_GDB_SERVER
 
-#include "ets_sys.h"
-#include "osapi.h"
-#include "gpio.h"
-#include "os_type.h"
-#include "user_interface.h"
-#include "mem.h"
-#include "v7_esp.h"
-#include "esp_uart.h"
+#include <stdio.h>
+#include <string.h>
+#include <ets_sys.h>
+#include <xtensa/corebits.h>
+#include <stdint.h>
 #include "v7_gdb.h"
 #include "v7_esp_hw.h"
-#include "xtensa/corebits.h"
+#include "esp_uart.h"
+#include "esp_missing_includes.h"
+#include "v7_esp.h"
+
+#ifndef RTOS_SDK
+
+#include <osapi.h>
+#include <gpio.h>
+#include <os_type.h>
+#include <user_interface.h>
+#include <mem.h>
+
+#else
+
+#include <c_types.h>
+#include <xtensa/xtruntime.h>
+
+#endif /* RTOS_SDK */
 
 /* TODO(mkm): not sure if gdb guarantees lowercase hex digits */
 #define fromhex(c) \
   (((c) &0x40) ? ((c) &0x20 ? (c) - 'a' + 10 : (c) - 'A' + 10) : (c) - '0')
 #define hexdigit(n) (((n) < 10) ? '0' + (n) : 'a' + ((n) -10))
 
-static struct regfile regs = {0};
+static struct regfile regs;
 static uint8_t gdb_send_checksum;
 
 void gdb_nack() {
@@ -215,10 +229,9 @@ void gdb_server() {
  * quite variegated xtensa platform family, but that's how it works on ESP8266.
  */
 FAST void gdb_exception_handler(struct xtos_saved_regs *frame) {
-  int i;
   uint32_t cause = RSR(EXCCAUSE);
   uint32_t vaddr = RSR(EXCVADDR);
-  printf("\nTrap %d: pc=%p va=%p\n", cause, frame->pc, vaddr);
+  printf("\nTrap %d: pc=%p va=%p\n", cause, (void *) frame->pc, (void *) vaddr);
   memcpy(&regs.a[2], frame->a, sizeof(frame->a));
 
   regs.a[0] = frame->a0;
@@ -233,6 +246,7 @@ FAST void gdb_exception_handler(struct xtos_saved_regs *frame) {
 }
 
 void gdb_init() {
+#ifndef RTOS_TODO
   char causes[] = {EXCCAUSE_ILLEGAL,          EXCCAUSE_INSTR_ERROR,
                    EXCCAUSE_LOAD_STORE_ERROR, EXCCAUSE_DIVIDE_BY_ZERO,
                    EXCCAUSE_UNALIGNED,        EXCCAUSE_INSTR_PROHIBITED,
@@ -241,6 +255,9 @@ void gdb_init() {
   for (i = 0; i < (int) sizeof(causes); i++) {
     _xtos_set_exception_handler(causes[i], gdb_exception_handler);
   }
+#else
+  printf("_xtos_set_exception_handler missing\n");
+#endif
 }
 
 #endif /* V7_ESP_GDB_SERVER */

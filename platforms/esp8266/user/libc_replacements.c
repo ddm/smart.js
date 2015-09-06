@@ -3,31 +3,42 @@
 * All rights reserved
 */
 
+#include <ets_sys.h>
+#include <v7.h>
 #include <ctype.h>
-#include <stddef.h>
-#include <stdarg.h>
-#include <stdio.h>
+#include <sys/time.h>
+#include <stdint.h>
+#include "esp_missing_includes.h"
+#include "v7_esp.h"
+
 #include <math.h>
+#include <stdarg.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+
+#ifndef RTOS_SDK
+
+#include <stddef.h>
+#include <stdio.h>
 #include <limits.h>
-#include <errno.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/time.h>
+#include <os_type.h>
+#include <osapi.h>
+#include <mem.h>
+#include <user_interface.h>
+#include <errno.h>
 
-#include "ets_sys.h"
-#include "os_type.h"
-#include "osapi.h"
-#include "mem.h"
-#include "user_interface.h"
-
-#include "v7.h"
-#include "v7_esp.h"
+#endif /* RTOS_SDK */
 
 /* Why these declarations are commented out in mem.h is beyond me. */
 void *pvPortMalloc(size_t xWantedSize);
 void vPortFree(void *pv);
 void *pvPortZalloc(size_t size);
 void *pvPortRealloc(void *pv, size_t size);
+
+int c_vsnprintf(char *buf, size_t buf_size, const char *format, va_list ap);
 
 /*
  * strerror provided by libc consumes 2kb RAM
@@ -43,6 +54,8 @@ char *strerror(int errnum) {
   buf[sizeof(buf) - 1] = 0;
   return buf;
 }
+
+#ifndef RTOS_SDK
 
 void *malloc(size_t size) {
   void *res = (void *) pvPortMalloc(size);
@@ -84,6 +97,37 @@ int sprintf(char *buffer, const char *format, ...) {
   return ret;
 }
 
+uint32_t htonl(uint32_t hostlong) {
+  return ((hostlong & 0xff000000) >> 24) | ((hostlong & 0x00ff0000) >> 8) |
+         ((hostlong & 0x0000ff00) << 8) | ((hostlong & 0x000000ff) << 24);
+}
+
+uint16_t htons(uint16_t hostshort) {
+  return ((hostshort & 0xff00) >> 8) | ((hostshort & 0x00ff) << 8);
+}
+
+uint16_t ntohs(uint16_t netshort) {
+  return htons(netshort);
+}
+
+uint32_t ntohl(uint32_t netlong) {
+  return htonl(netlong);
+}
+
+void *_malloc_r(struct _reent *r, size_t size) {
+  return malloc(size);
+}
+
+void _free_r(struct _reent *r, void *ptr) {
+  free(ptr);
+}
+
+void *_realloc_r(struct _reent *r, void *ptr, size_t size) {
+  return realloc(ptr, size);
+}
+
+#endif /* RTOS_SDK */
+
 int snprintf(char *buffer, size_t size, const char *format, ...) {
   int ret;
   va_list arglist;
@@ -105,7 +149,7 @@ double strtod(const char *str, char **endptr) {
   bool decimals = false;
   char c;
 
-  while (isspace(*str)) {
+  while (isspace((int) *str)) {
     str++;
   }
 
@@ -126,7 +170,7 @@ double strtod(const char *str, char **endptr) {
     str++;
     if (*str == 'x') { /* base 16 */
       str++;
-      while ((c = tolower(*str))) {
+      while ((c = tolower((int) *str))) {
         int d;
         if (c >= '0' && c <= '9') {
           d = c - '0';
@@ -328,37 +372,9 @@ void _exit(int status) {
   abort();
 }
 
-uint32_t htonl(uint32_t hostlong) {
-  return ((hostlong & 0xff000000) >> 24) | ((hostlong & 0x00ff0000) >> 8) |
-         ((hostlong & 0x0000ff00) << 8) | ((hostlong & 0x000000ff) << 24);
-}
-
-uint16_t htons(uint16_t hostshort) {
-  return ((hostshort & 0xff00) >> 8) | ((hostshort & 0x00ff) << 8);
-}
-
-uint16_t ntohs(uint16_t netshort) {
-  return htons(netshort);
-}
-
-uint32_t ntohl(uint32_t netlong) {
-  return htonl(netlong);
-}
-
-void *_malloc_r(struct _reent *r, size_t size) {
-  return malloc(size);
-}
-
-void _free_r(struct _reent *r, void *ptr) {
-  free(ptr);
-}
-
-void *_realloc_r(struct _reent *r, void *ptr, size_t size) {
-  return realloc(ptr, size);
-}
-
 int _gettimeofday_r(struct _reent *r, struct timeval *tp, void *tzp) {
-  tp->tv_sec = 42;
-  tp->tv_usec = 123;
+  uint32_t time = system_get_time();
+  tp->tv_sec = time / 1000000;
+  tp->tv_usec = time % 1000000;
   return 0;
 }

@@ -25,6 +25,11 @@
 */
 
 #include "esp_spi.h"
+#include <stdlib.h>
+
+#ifdef RTOS_SDK
+#include <eagle_soc.h>
+#endif
 
 struct esp_spi_connection {
   uint8_t spi_no;
@@ -33,7 +38,7 @@ struct esp_spi_connection {
 int spi_init(spi_connection c) {
   struct esp_spi_connection *conn = (struct esp_spi_connection *) c;
 
-  if (conn->spi_no > 1) return;
+  if (conn->spi_no > 1) return -1;
 
   spi_init_gpio(conn->spi_no, SPI_CLK_USE_DIV);
   spi_clock(conn->spi_no, SPI_CLK_PREDIV, SPI_CLK_CNTDIV);
@@ -120,7 +125,7 @@ static void spi_set_command(uint8_t spi_no, uint8_t cmd_bits,
       ((command >> 8) & 0xff) | ((command << 8) & 0xff00); /* swap byte order */
   WRITE_PERI_REG(SPI_USER2(spi_no), ((((cmd_bits - 1) & SPI_USR_COMMAND_BITLEN)
                                       << SPI_USR_COMMAND_BITLEN_S) |
-                                     command & SPI_USR_COMMAND_VALUE));
+                                     (command & SPI_USR_COMMAND_VALUE)));
 }
 
 static void spi_set_address(uint8_t spi_no, uint32_t addr_bits,
@@ -251,6 +256,8 @@ spi_connection sj_spi_create(struct v7 *v7, v7_val_t args) {
   (void) args;
 
   conn->spi_no = HSPI;
+
+  return conn;
 }
 
 void sj_spi_close(spi_connection conn) {

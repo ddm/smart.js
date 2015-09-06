@@ -3,7 +3,9 @@
  * All rights reserved
  */
 #include "sj_prompt.h"
+#include "sj_v7_ext.h"
 #include "sj_hal.h"
+#include "sj_v7_ext.h"
 
 #include <stdarg.h>
 #include <stdlib.h>
@@ -35,9 +37,12 @@ static void show_prompt(void) {
    * Flashnchips relies on prompt ending with "$ " to detect when it's okay
    * to send the next line during file upload.
    */
-  printf("smartjs %u/%d$ ", sj_get_free_heap_size(),
-         v7_heap_stat(s_sjp.v7, V7_HEAP_STAT_HEAP_SIZE) -
-             v7_heap_stat(s_sjp.v7, V7_HEAP_STAT_HEAP_USED));
+
+  /* TODO RTOS(alashkin): RTOS printf doesn't support %lu */
+  printf("smartjs %u/%d$ ", (unsigned int) sj_get_free_heap_size(),
+         (int) v7_heap_stat(s_sjp.v7, V7_HEAP_STAT_HEAP_SIZE) -
+             (int) v7_heap_stat(s_sjp.v7, V7_HEAP_STAT_HEAP_USED));
+
   fflush(stdout);
   s_sjp.pos = 0;
   s_sjp.char_processor = process_prompt_char;
@@ -46,11 +51,11 @@ static void show_prompt(void) {
 static void process_here_char(char ch) {
   printf("%c", ch);
 
-  if (s_sjp.pos >= 7 &&
-          strncmp(&s_sjp.buf[s_sjp.pos - 7], "\r\nEOF\r\n", 7) == 0 ||
-      s_sjp.pos >= 5 &&
-          (strncmp(&s_sjp.buf[s_sjp.pos - 5], "\nEOF\n", 5) == 0 ||
-           strncmp(&s_sjp.buf[s_sjp.pos - 5], "\rEOF\r", 5) == 0)) {
+  if ((s_sjp.pos >= 7 &&
+       strncmp(&s_sjp.buf[s_sjp.pos - 7], "\r\nEOF\r\n", 7) == 0) ||
+      (s_sjp.pos >= 5 &&
+       (strncmp(&s_sjp.buf[s_sjp.pos - 5], "\nEOF\n", 5) == 0 ||
+        strncmp(&s_sjp.buf[s_sjp.pos - 5], "\rEOF\r", 5) == 0))) {
     int end_pos = s_sjp.pos - (s_sjp.buf[s_sjp.pos - 2] == '\r' ? 7 : 5);
     s_sjp.buf[end_pos] = '\0';
     printf("\n");
@@ -76,7 +81,6 @@ static void interrupt_char_processor(char ch) {
 
 static void process_js(char *cmd) {
   s_sjp.char_processor = interrupt_char_processor;
-  char result_str[10];
   v7_val_t v;
   int res = v7_exec(s_sjp.v7, &v, cmd);
 
@@ -85,17 +89,17 @@ static void process_js(char *cmd) {
   } else if (res == V7_STACK_OVERFLOW) {
     printf("Stack overflow: %s\n", v7_get_parser_error(s_sjp.v7));
   } else {
-    char *p = v7_to_json(s_sjp.v7, v, result_str, sizeof(result_str));
-
     if (res == V7_EXEC_EXCEPTION) {
       printf("Exec error:");
     }
 
-    printf("%s\n", p);
+    v7_println(s_sjp.v7, v);
 
-    if (p != result_str) {
-      free(p);
+#if V7_ENABLE__StackTrace
+    if (res == V7_EXEC_EXCEPTION) {
+      v7_fprint_stack_trace(stdout, s_sjp.v7, v);
     }
+#endif
   }
 
   v7_gc(s_sjp.v7, 0 /* full */);
@@ -172,7 +176,9 @@ static void process_prompt_char(char ch) {
       s_sjp.buf[s_sjp.pos] = '\0';
       break;
     case '\r':
+#ifndef SJ_PROMPT_DISABLE_ECHO
       printf("\n");
+#endif
       s_sjp.pos--;
       s_sjp.buf[s_sjp.pos] = '\0';
       process_command(s_sjp.buf);
@@ -181,7 +187,9 @@ static void process_prompt_char(char ch) {
     case '\n':
       break;
     default:
+#ifndef SJ_PROMPT_DISABLE_ECHO
       printf("%c", ch); /* echo */
+#endif
       break;
   }
 }
@@ -193,6 +201,7 @@ void sj_prompt_init(struct v7 *v7) {
   s_sjp.v7 = v7;
 
   printf("\n");
+  sj_prompt_init_hal();
   show_prompt();
 }
 

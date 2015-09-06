@@ -3,14 +3,28 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 
 #include "hw_types.h"
 #include "hw_memmap.h"
+#include "rom.h"
 #include "rom_map.h"
 #include "uart.h"
 #include "utils.h"
 
+#include "cc3200_fs.h"
 #include "config.h"
+
+/* FIXME */
+int _gettimeofday_r(struct _reent *r, struct timeval *tp, void *tzp) {
+  tp->tv_sec = 42;
+  tp->tv_usec = 123;
+  return 0;
+}
+
+long int random(void) {
+  return 42; /* FIXME */
+}
 
 void fprint_str(FILE *fp, const char *str) {
   while (*str != '\0') {
@@ -37,6 +51,7 @@ int _kill(int pid, int sig) {
   (void) pid;
   (void) sig;
   _not_implemented("_kill");
+  return -1;
 }
 
 int _getpid() {
@@ -47,40 +62,4 @@ int _getpid() {
 int _isatty(int fd) {
   /* 0, 1 and 2 are TTYs. */
   return fd < 2;
-}
-
-ssize_t _write(int fd, const void *buf, size_t count) {
-  if (fd != 1 && fd != 2) {
-    _not_implemented("_write to files");
-  }
-  for (size_t i = 0; i < count; i++) {
-    const char c = ((const char *) buf)[i];
-    if (c == '\n') MAP_UARTCharPut(CONSOLE_UART, '\r');
-    MAP_UARTCharPut(CONSOLE_UART, c);
-  }
-  return count;
-}
-
-int _close(int fd) {
-  _not_implemented("_close");
-}
-
-off_t _lseek(int fd, off_t offset, int whence) {
-  _not_implemented("_lseek");
-}
-
-int _fstat(int fd, struct stat *s) {
-  if (fd > 2) {
-    _not_implemented("_fstat on files");
-  }
-  /* Create barely passable stats for STD{IN,OUT,ERR}. */
-  memset(s, 0, sizeof(*s));
-  s->st_ino = fd;
-  s->st_rdev = fd;
-  s->st_mode = S_IFCHR | 0666;
-  return 0;
-}
-
-ssize_t _read(int fd, void *buf, size_t count) {
-  _not_implemented("_read");
 }

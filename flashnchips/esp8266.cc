@@ -8,7 +8,6 @@
 #include <QCommandLineParser>
 #include <QCryptographicHash>
 #include <QDataStream>
-#include <QDateTime>
 #include <QDir>
 #include <QtDebug>
 #include <QIODevice>
@@ -25,6 +24,10 @@
 
 #include "fs.h"
 #include "serial.h"
+
+#if (QT_VERSION < QT_VERSION_CHECK(5, 5, 0))
+#define qInfo qWarning
+#endif
 
 // Code in this file (namely, rebootIntoBootloader function) assumes the same
 // wiring as esptool.py:
@@ -331,29 +334,6 @@ void rebootIntoFirmware(QSerialPort* serial) {
   serial->setRequestToSend(false);  // pull up RESET
 }
 
-}  // namespace
-
-util::Status probe(const QSerialPortInfo& port) {
-  auto r = connectSerial(port, 9600);
-  if (!r.ok()) {
-    return r.status();
-  }
-  std::unique_ptr<QSerialPort> s(r.ValueOrDie());
-
-  if (!rebootIntoBootloader(s.get())) {
-    return util::Status(util::error::ABORTED,
-                        "Failed to reboot into bootloader");
-  }
-
-  auto mac = read_MAC(s.get()).toHex();
-  if (mac.length() < 6) {
-    return util::Status(util::error::ABORTED, "Failed to read MAC address");
-  }
-  qDebug() << "MAC address: " << mac;
-
-  return util::Status::OK;
-}
-
 class FlasherImpl : public Flasher {
   Q_OBJECT
  public:
@@ -462,7 +442,7 @@ class FlasherImpl : public Flasher {
                           tr("Do files to flash").toStdString());
     }
     for (const auto& file : files) {
-      qWarning() << "Loading" << file.fileName();
+      qInfo() << "Loading" << file.fileName();
       bool ok = false;
       ulong addr = file.baseName().toULong(&ok, 16);
       if (!ok) {
@@ -951,8 +931,45 @@ class FlasherImpl : public Flasher {
   QString id_hostname_;
 };
 
-std::unique_ptr<Flasher> flasher() {
-  return std::move(std::unique_ptr<Flasher>(new FlasherImpl));
+class ESP8266HAL : public HAL {
+  util::Status probe(const QSerialPortInfo& port) const override {
+    auto r = connectSerial(port, 9600);
+    if (!r.ok()) {
+      return r.status();
+    }
+    std::unique_ptr<QSerialPort> s(r.ValueOrDie());
+
+    if (!rebootIntoBootloader(s.get())) {
+      return util::Status(util::error::ABORTED,
+                          "Failed to reboot into bootloader");
+    }
+
+    auto mac = read_MAC(s.get()).toHex();
+    if (mac.length() < 6) {
+      return util::Status(util::error::ABORTED, "Failed to read MAC address");
+    }
+    qInfo() << "MAC address: " << mac;
+
+    return util::Status::OK;
+  }
+  std::unique_ptr<Flasher> flasher() const override {
+    return std::move(std::unique_ptr<Flasher>(new FlasherImpl));
+  }
+
+  std::string name() const override {
+    return "ESP8266";
+  }
+
+  util::Status reboot(QSerialPort* port) const override {
+    rebootIntoFirmware(port);
+    return util::Status::OK;
+  }
+};
+
+}  // namespace
+
+std::unique_ptr<::HAL> HAL() {
+  return std::move(std::unique_ptr<::HAL>(new ESP8266HAL));
 }
 
 namespace {
@@ -1038,26 +1055,7 @@ void addOptions(QCommandLineParser* parser) {
 }
 
 QByteArray makeIDBlock(const QString& domain) {
-  qsrand(QDateTime::currentMSecsSinceEpoch() & 0xFFFFFFFF);
-  QByteArray random;
-  QDataStream s(&random, QIODevice::WriteOnly);
-  for (int i = 0; i < 6; i++) {
-    // Minimal value for RAND_MAX is 32767, so we are guaranteed to get at
-    // least 15 bits of randomness. In that case highest bit of each word will
-    // be 0, but whatever, we're not doing crypto here (although we should).
-    s << qint16(qrand() & 0xFFFF);
-    // TODO(imax): use a proper cryptographic PRNG at least for PSK. It must
-    // be hard to guess PSK knowing the ID, which is not the case with
-    // qrand(): there are at most 2^32 unique sequences.
-  }
-  QByteArray data =
-      QString("{\"id\":\"//%1/d/%2\",\"key\":\"%3\"}")
-          .arg(domain)
-          .arg(QString::fromUtf8(random.mid(0, 5).toBase64(
-              QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals)))
-          .arg(QString::fromUtf8(random.mid(5).toBase64(
-              QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals)))
-          .toUtf8();
+  QByteArray data = randomDeviceID(domain);
   QByteArray r = QCryptographicHash::hash(data, QCryptographicHash::Sha1)
                      .append(data)
                      .append("\0", 1);

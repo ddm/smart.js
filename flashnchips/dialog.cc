@@ -1,10 +1,7 @@
 #include "dialog.h"
 
-#include <QAction>
 #include <QApplication>
 #include <QBoxLayout>
-#include <QCheckBox>
-#include <QComboBox>
 #include <QCommandLineParser>
 #include <QDebug>
 #include <QDesktopServices>
@@ -15,17 +12,7 @@
 #include <QFont>
 #include <QFontDatabase>
 #include <QFormLayout>
-#include <QGroupBox>
-#include <QHBoxLayout>
-#include <QLabel>
-#include <QLineEdit>
-#include <QListWidget>
-#include <QMenuBar>
 #include <QMessageBox>
-#include <QPalette>
-#include <QPlainTextEdit>
-#include <QProgressBar>
-#include <QPushButton>
 #include <QScrollBar>
 #include <QSerialPort>
 #include <QSerialPortInfo>
@@ -34,30 +21,23 @@
 #include <QThread>
 #include <QTimer>
 #include <QUrl>
-#include <QVBoxLayout>
-#include <QWidget>
 
+#include "cc3200.h"
 #include "esp8266.h"
 #include "flasher.h"
 #include "serial.h"
+#include "ui_about.h"
+
+#if (QT_VERSION < QT_VERSION_CHECK(5, 5, 0))
+#define qInfo qWarning
+#endif
 
 static const int kInputHistoryLength = 100;
 static const char kPromptEnd[] = "$ ";
 
 MainDialog::MainDialog(QCommandLineParser* parser, QWidget* parent)
     : QMainWindow(parent), parser_(parser) {
-  QWidget* w = new QWidget;
-  QVBoxLayout* layout = new QVBoxLayout;
-
-  addPortAndPlatform(layout);
-  addFirmwareSelector(layout);
-  // addFSSelector(layout);
-  addSerialConsole(layout);
-  addMenuBar();
-
-  w->setLayout(layout);
-  setCentralWidget(w);
-  setWindowTitle(tr("Smart.js flashing tool"));
+  ui_.setupUi(this);
 
   fwDir_ = QDir(QApplication::applicationDirPath());
 #ifdef Q_OS_MAC
@@ -76,6 +56,44 @@ MainDialog::MainDialog(QCommandLineParser* parser, QWidget* parent)
   restoreState(settings_.value("window/state").toByteArray());
   skip_detect_warning_ = settings_.value("skipDetectWarning", false).toBool();
 
+  QString p = settings_.value("selectedPlatform", "ESP8266").toString();
+  for (int i = 0; i < ui_.platformSelector->count(); i++) {
+    if (p == ui_.platformSelector->itemText(i)) {
+      QTimer::singleShot(
+          0, [this, i]() { ui_.platformSelector->setCurrentIndex(i); });
+      break;
+    }
+  }
+
+  net_mgr_.updateConfigurations();
+  resetHAL();
+  ui_.progressBar->hide();
+  ui_.statusMessage->hide();
+
+  const QFont fixedFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+  ui_.terminal->setFont(fixedFont);
+  ui_.terminalInput->installEventFilter(this);
+
+  action_enabled_in_state_.insert(ui_.actionConfigure_Wi_Fi, Terminal);
+  action_enabled_in_state_.insert(ui_.actionUpload_a_file, Terminal);
+  enabled_in_state_.insert(ui_.connectBtn, Connected);
+  enabled_in_state_.insert(ui_.connectBtn, NotConnected);
+  enabled_in_state_.insert(ui_.connectBtn, Terminal);
+  enabled_in_state_.insert(ui_.detectBtn, NoPortSelected);
+  enabled_in_state_.insert(ui_.detectBtn, NotConnected);
+  enabled_in_state_.insert(ui_.firmwareSelector, Connected);
+  enabled_in_state_.insert(ui_.firmwareSelector, NotConnected);
+  enabled_in_state_.insert(ui_.firmwareSelector, Terminal);
+  enabled_in_state_.insert(ui_.flashBtn, Connected);
+  enabled_in_state_.insert(ui_.flashBtn, NotConnected);
+  enabled_in_state_.insert(ui_.flashBtn, Terminal);
+  enabled_in_state_.insert(ui_.platformSelector, NoPortSelected);
+  enabled_in_state_.insert(ui_.platformSelector, NotConnected);
+  enabled_in_state_.insert(ui_.portSelector, NotConnected);
+  enabled_in_state_.insert(ui_.rebootBtn, Connected);
+  enabled_in_state_.insert(ui_.rebootBtn, Terminal);
+  enabled_in_state_.insert(ui_.terminalInput, Terminal);
+
   enableControlsForCurrentState();
 
   QTimer::singleShot(0, this, &MainDialog::updatePortList);
@@ -86,209 +104,97 @@ MainDialog::MainDialog(QCommandLineParser* parser, QWidget* parent)
 
   connect(this, &MainDialog::gotPrompt, this, &MainDialog::sendQueuedCommand);
 
-  net_mgr_.updateConfigurations();
-}
+  connect(ui_.portSelector, static_cast<void (QComboBox::*) (int) >(
+                                &QComboBox::currentIndexChanged),
+          [this](int index) {
+            switch (state_) {
+              case NoPortSelected:
+                if (index >= 0) {
+                  setState(NotConnected);
+                }
+                break;
+              case NotConnected:
+                if (index < 0) {
+                  setState(NoPortSelected);
+                }
+                break;
+              default:
+                // no-op
+                break;
+            }
+          });
 
-void MainDialog::addPortAndPlatform(QBoxLayout* parent) {
-  QHBoxLayout* layout = new QHBoxLayout;
+  connect(ui_.detectBtn, &QPushButton::clicked, this, &MainDialog::detectPorts);
 
-  portSelector_ = new QComboBox;
-  enabled_in_state_.insert(portSelector_, NotConnected);
-  layout->addWidget(portSelector_, 1);
+  connect(ui_.platformSelector, &QComboBox::currentTextChanged, this,
+          &MainDialog::resetHAL);
+  connect(ui_.platformSelector, &QComboBox::currentTextChanged,
+          [this](QString platform) {
+            settings_.setValue("selectedPlatform", platform);
+          });
 
-  detectBtn_ = new QPushButton(tr("Detect devices"));
-  enabled_in_state_.insert(detectBtn_, NotConnected);
-  layout->addWidget(detectBtn_, 0);
-  connect(detectBtn_, &QPushButton::clicked, this, &MainDialog::detectPorts);
+  connect(ui_.flashBtn, &QPushButton::clicked, this, &MainDialog::loadFirmware);
 
-  // TODO(imax): make it do something meaningful when we have more than one
-  // platform.
-  QComboBox* platformSelector = new QComboBox;
-  platformSelector->addItem("ESP8266");
-  layout->addWidget(platformSelector, 0);
-
-  parent->addLayout(layout);
-}
-
-void MainDialog::addFirmwareSelector(QBoxLayout* parent) {
-  QGroupBox* group = new QGroupBox(tr("Flashing firmware"));
-
-  QVBoxLayout* layout = new QVBoxLayout;
-
-  QHBoxLayout* hlayout = new QHBoxLayout;
-
-  fwSelector_ = new QComboBox;
-  enabled_in_state_.insert(fwSelector_, NotConnected);
-  enabled_in_state_.insert(fwSelector_, Connected);
-  enabled_in_state_.insert(fwSelector_, Terminal);
-  hlayout->addWidget(fwSelector_, 1);
-
-  flashBtn_ = new QPushButton(tr("Load firmware"));
-  connect(flashBtn_, &QPushButton::clicked, this, &MainDialog::loadFirmware);
-  enabled_in_state_.insert(flashBtn_, NotConnected);
-  enabled_in_state_.insert(flashBtn_, Connected);
-  enabled_in_state_.insert(flashBtn_, Terminal);
-  hlayout->addWidget(flashBtn_);
-
-  layout->addLayout(hlayout);
-
-  flashingProgress_ = new QProgressBar();
-  flashingStatus_ = new QLabel();
-  flashingStatus_->setTextFormat(Qt::RichText);
-  flashingStatus_->setOpenExternalLinks(true);
-
-  layout->addWidget(flashingProgress_);
-  layout->addWidget(flashingStatus_);
-
-  group->setLayout(layout);
-
-  parent->addWidget(group);
-}
-
-void MainDialog::addFSSelector(QBoxLayout* parent) {
-  QGroupBox* group = new QGroupBox(tr("File system"));
-
-  QVBoxLayout* layout = new QVBoxLayout;
-
-  QHBoxLayout* hlayout = new QHBoxLayout;
-  fsDir_ = new QLineEdit;
-  hlayout->addWidget(fsDir_, 1);
-  QPushButton* btn = new QPushButton(tr("Browse..."));
-  connect(btn, &QPushButton::clicked, this, &MainDialog::selectFSDir);
-  hlayout->addWidget(btn);
-  layout->addLayout(hlayout);
-
-  hlayout = new QHBoxLayout;
-  fsFiles_ = new QListWidget;
-  hlayout->addWidget(fsFiles_, 1);
-  QVBoxLayout* vlayout = new QVBoxLayout;
-  btn = new QPushButton(tr("Sync from device"));
-  connect(btn, &QPushButton::clicked, this, &MainDialog::syncFrom);
-  vlayout->addWidget(btn);
-  btn = new QPushButton(tr("Sync to device"));
-  connect(btn, &QPushButton::clicked, this, &MainDialog::syncTo);
-  vlayout->addWidget(btn);
-  vlayout->addStretch(1);
-  hlayout->addLayout(vlayout);
-
-  layout->addLayout(hlayout, 1);
-
-  group->setLayout(layout);
-
-  parent->addWidget(group, 1);
-}
-
-void MainDialog::addSerialConsole(QBoxLayout* parent) {
-  QGroupBox* group = new QGroupBox(tr("Serial console"));
-
-  QBoxLayout* layout = new QVBoxLayout;
-
-  QBoxLayout* hlayout = new QHBoxLayout;
-
-  connect_disconnect_btn_ = new QPushButton(tr("Connect"));
-  enabled_in_state_.insert(connect_disconnect_btn_, NotConnected);
-  enabled_in_state_.insert(connect_disconnect_btn_, Connected);
-  enabled_in_state_.insert(connect_disconnect_btn_, Terminal);
-
-  reboot_btn_ = new QPushButton(tr("Reboot"));
-  enabled_in_state_.insert(reboot_btn_, Connected);
-  enabled_in_state_.insert(reboot_btn_, Terminal);
-
-  QCheckBox* systemColors = new QCheckBox(tr("Use default colors"));
-  bool b = settings_.value("terminal/systemColors", true).toBool();
-  systemColors->setChecked(b);
-  QTimer::singleShot(0, [b, this]() { setTerminalColors(b); });
-  QPushButton* clear_btn = new QPushButton(tr("Clear"));
-
-  actionSelector_ = new QComboBox;
-  enabled_in_state_.insert(actionSelector_, Terminal);
-  actionSelector_->addItem(tr("Select action..."), int(None));
-  actionSelector_->addItem(tr("Configure Wi-Fi"), int(ConfigureWiFi));
-  actionSelector_->addItem(tr("Upload file"), int(UploadFile));
-
-  connect(connect_disconnect_btn_, &QPushButton::clicked, this,
+  connect(ui_.connectBtn, &QPushButton::clicked, this,
           &MainDialog::connectDisconnectTerminal);
-  connect(reboot_btn_, &QPushButton::clicked, this, &MainDialog::rebootESP8266);
+  connect(ui_.rebootBtn, &QPushButton::clicked, this, &MainDialog::reboot);
 
-  connect(systemColors, &QCheckBox::toggled, this,
-          &MainDialog::setTerminalColors);
-  connect(actionSelector_, static_cast<void (QComboBox::*) (int) >(
-                               &QComboBox::currentIndexChanged),
-          this, &MainDialog::doAction);
+  connect(ui_.actionConfigure_Wi_Fi, &QAction::triggered, this,
+          &MainDialog::configureWiFi);
+  connect(ui_.actionUpload_a_file, &QAction::triggered, this,
+          &MainDialog::uploadFile);
 
-  hlayout->addWidget(connect_disconnect_btn_);
-  hlayout->addWidget(reboot_btn_);
-  hlayout->addWidget(clear_btn);
-  hlayout->addWidget(systemColors);
-  hlayout->addStretch(1);
-  hlayout->addWidget(actionSelector_);
-
-  layout->addLayout(hlayout);
-
-  terminal_ = new QPlainTextEdit();
-  terminal_->setReadOnly(true);
-  terminal_->document()->setMaximumBlockCount(4096);
-  const QFont fixedFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-  terminal_->setFont(fixedFont);
-
-  terminal_input_ = new QLineEdit();
-  enabled_in_state_.insert(terminal_input_, Terminal);
-  terminal_input_->installEventFilter(this);
-
-  connect(terminal_input_, &QLineEdit::returnPressed, this,
+  connect(ui_.terminalInput, &QLineEdit::returnPressed, this,
           &MainDialog::writeSerial);
-  connect(clear_btn, &QPushButton::clicked, terminal_, &QPlainTextEdit::clear);
 
-  layout->addWidget(terminal_, 1);
-  layout->addWidget(terminal_input_);
-
-  group->setLayout(layout);
-
-  parent->addWidget(group, 1);
-}
-
-void MainDialog::addMenuBar() {
-  QMenuBar* menu = menuBar();
-  QMenu* helpMenu = new QMenu(tr("&Help"), menu);
-  QAction* a;
-  a = new QAction(tr("Help"), helpMenu);
-  connect(a, &QAction::triggered, [this]() {
+  connect(ui_.actionOpenWebsite, &QAction::triggered, [this]() {
+    const QString url = "https://www.cesanta.com/smartjs";
+    if (!QDesktopServices::openUrl(QUrl(url))) {
+      QMessageBox::warning(this, tr("Error"), tr("Failed to open %1").arg(url));
+    }
+  });
+  connect(ui_.actionOpenDashboard, &QAction::triggered, [this]() {
+    const QString url = "https://dashboard.cesanta.com/";
+    if (!QDesktopServices::openUrl(QUrl(url))) {
+      QMessageBox::warning(this, tr("Error"), tr("Failed to open %1").arg(url));
+    }
+  });
+  connect(ui_.actionSend_feedback, &QAction::triggered, [this]() {
+    const QString url = "https://www.cesanta.com/contact";
+    if (!QDesktopServices::openUrl(QUrl(url))) {
+      QMessageBox::warning(this, tr("Error"), tr("Failed to open %1").arg(url));
+    }
+  });
+  connect(ui_.actionHelp, &QAction::triggered, [this]() {
     const QString url =
         "https://github.com/cesanta/smart.js/blob/master/flashnchips/README.md";
     if (!QDesktopServices::openUrl(QUrl(url))) {
       QMessageBox::warning(this, tr("Error"), tr("Failed to open %1").arg(url));
     }
   });
-  helpMenu->addAction(a);
 
-  a = new QAction(tr("About Qt"), helpMenu);
-  a->setMenuRole(QAction::AboutQtRole);
-  connect(a, &QAction::triggered, qApp, &QApplication::aboutQt);
-  helpMenu->addAction(a);
-
-  a = new QAction(tr("About"), helpMenu);
-  a->setMenuRole(QAction::AboutRole);
-  connect(a, &QAction::triggered, this, &MainDialog::showAboutBox);
-  helpMenu->addAction(a);
-
-  menu->addMenu(helpMenu);
+  connect(ui_.actionAbout_Qt, &QAction::triggered, qApp,
+          &QApplication::aboutQt);
+  connect(ui_.actionAbout, &QAction::triggered, this,
+          &MainDialog::showAboutBox);
 }
 
 void MainDialog::setState(State newState) {
   State old = state_;
   state_ = newState;
-  qDebug() << "MainDialog state changed from" << old << "to" << newState;
+  qInfo() << "MainDialog state changed from" << old << "to" << newState;
   enableControlsForCurrentState();
   // TODO(imax): find a better place for this.
   switch (state_) {
+    case NoPortSelected:
     case NotConnected:
-      connect_disconnect_btn_->setText(tr("Connect"));
+      ui_.connectBtn->setText(tr("Connect"));
       break;
     case Connected:
     case Flashing:
     case PortGoneWhileFlashing:
     case Terminal:
-      connect_disconnect_btn_->setText(tr("Disconnect"));
+      ui_.connectBtn->setText(tr("Disconnect"));
       break;
   }
 }
@@ -297,13 +203,31 @@ void MainDialog::enableControlsForCurrentState() {
   for (QWidget* w : enabled_in_state_.keys()) {
     w->setEnabled(enabled_in_state_.find(w, state_) != enabled_in_state_.end());
   }
+  for (QAction* a : action_enabled_in_state_.keys()) {
+    a->setEnabled(action_enabled_in_state_.find(a, state_) !=
+                  action_enabled_in_state_.end());
+  }
+}
+
+void MainDialog::resetHAL(QString name) {
+  if (name.isEmpty()) {
+    name = ui_.platformSelector->currentText();
+  }
+  if (name == "ESP8266") {
+    hal_ = ESP8266::HAL();
+  } else if (name == "CC3200") {
+    hal_ = CC3200::HAL();
+  } else {
+    qFatal("Unknown platform: %s", name.toStdString().c_str());
+  }
+  QTimer::singleShot(0, this, &MainDialog::updateFWList);
 }
 
 util::Status MainDialog::openSerial() {
   if (state_ != NotConnected) {
     return util::Status::OK;
   }
-  QString portName = portSelector_->currentData().toString();
+  QString portName = ui_.portSelector->currentData().toString();
   if (portName == "") {
     return util::Status(util::error::INVALID_ARGUMENT,
                         tr("No port selected").toStdString());
@@ -355,6 +279,9 @@ util::Status MainDialog::closeSerial() {
 void MainDialog::connectDisconnectTerminal() {
   util::Status err;
   switch (state_) {
+    case NoPortSelected:
+      QMessageBox::critical(this, tr("Error"), tr("No port selected"));
+      break;
     case NotConnected:
       err = openSerial();
       if (!err.ok()) {
@@ -375,16 +302,16 @@ void MainDialog::connectDisconnectTerminal() {
       // Write a newline to get a prompt back.
       serial_port_->write(QByteArray("\r\n"));
       setState(Terminal);
-      terminal_input_->setFocus();
-      terminal_->appendPlainText(tr("--- connected"));
-      terminal_->appendPlainText("");  // readSerial will append stuff here.
+      ui_.terminalInput->setFocus();
+      ui_.terminal->appendPlainText(tr("--- connected"));
+      ui_.terminal->appendPlainText("");  // readSerial will append stuff here.
       break;
     case Terminal:
       disconnect(serial_port_.get(), &QIODevice::readyRead, this,
                  &MainDialog::readSerial);
 
       setState(Connected);
-      terminal_->appendPlainText(tr("--- disconnected"));
+      ui_.terminal->appendPlainText(tr("--- disconnected"));
       closeSerial();
     case Flashing:
     case PortGoneWhileFlashing:
@@ -403,7 +330,7 @@ util::Status MainDialog::disconnectTerminalSignals() {
              &MainDialog::readSerial);
 
   setState(Connected);
-  terminal_->appendPlainText(tr("--- disconnected"));
+  ui_.terminal->appendPlainText(tr("--- disconnected"));
   return util::Status::OK;
 }
 
@@ -427,13 +354,13 @@ void MainDialog::readSerial() {
   if (data.length() >= 2 && data.right(2) == kPromptEnd) {
     emit gotPrompt();
   }
-  auto* scroll = terminal_->verticalScrollBar();
+  auto* scroll = ui_.terminal->verticalScrollBar();
   bool autoscroll = scroll->value() == scroll->maximum();
   // Appending a bunch of text the hard way, because
   // QPlainTextEdit::appendPlainText creates a new paragraph on each call,
   // making it look like extra newlines.
   const QStringList parts = data.split('\n');
-  QTextCursor cursor = QTextCursor(terminal_->document());
+  QTextCursor cursor = QTextCursor(ui_.terminal->document());
   cursor.movePosition(QTextCursor::End);
   for (int i = 0; i < parts.length() - 1; i++) {
     cursor.insertText(trimRight(parts[i]));
@@ -450,47 +377,58 @@ void MainDialog::writeSerial() {
   if (serial_port_ == nullptr) {
     return;
   }
-  serial_port_->write((terminal_input_->text() + "\r\n").toUtf8());
-  if (!terminal_input_->text().isEmpty() &&
+  serial_port_->write((ui_.terminalInput->text() + "\r\n").toUtf8());
+  if (!ui_.terminalInput->text().isEmpty() &&
       (input_history_.length() == 0 ||
-       input_history_.last() != terminal_input_->text())) {
-    input_history_ << terminal_input_->text();
+       input_history_.last() != ui_.terminalInput->text())) {
+    input_history_ << ui_.terminalInput->text();
   }
   while (input_history_.length() > kInputHistoryLength) {
     input_history_.removeAt(0);
   }
   settings_.setValue("terminal/history", input_history_);
   history_cursor_ = -1;
-  terminal_input_->clear();
+  ui_.terminalInput->clear();
   incomplete_input_ = "";
   // Relying on remote echo.
 }
 
-void MainDialog::rebootESP8266() {
+void MainDialog::reboot() {
   if (serial_port_ == nullptr) {
     qDebug() << "Attempt to reboot without an open port!";
     return;
   }
-  // TODO(imax): add a knob for inverted DTR&RTS.
-  serial_port_->setDataTerminalReady(false);
-  serial_port_->setRequestToSend(true);
-  QThread::msleep(50);
-  serial_port_->setRequestToSend(false);
+  if (hal_ == nullptr) {
+    qFatal("No HAL instance");
+  }
+  util::Status st = hal_->reboot(serial_port_.get());
+  if (!st.ok()) {
+    qCritical() << "Rebooting failed:" << st.ToString().c_str();
+    QMessageBox::critical(this, tr("Error"),
+                          QString::fromStdString(st.ToString()));
+  }
 }
 
 void MainDialog::updatePortList() {
-  if (state_ != NotConnected) {
+  if (state_ != NotConnected && state_ != NoPortSelected) {
     return;
   }
 
   QSet<QString> to_delete, to_add;
 
-  for (int i = 0; i < portSelector_->count(); i++) {
-    to_delete.insert(portSelector_->itemData(i).toString());
+  for (int i = 0; i < ui_.portSelector->count(); i++) {
+    if (ui_.portSelector->itemData(i).type() == QVariant::String) {
+      to_delete.insert(ui_.portSelector->itemData(i).toString());
+    }
   }
 
   auto ports = QSerialPortInfo::availablePorts();
   for (const auto& info : ports) {
+#ifdef Q_OS_MAC
+    if (info.portName().contains("Bluetooth")) {
+      continue;
+    }
+#endif
     to_add.insert(info.portName());
   }
 
@@ -505,20 +443,24 @@ void MainDialog::updatePortList() {
   }
 
   for (const auto& s : to_delete) {
-    for (int i = 0; i < portSelector_->count(); i++) {
-      if (portSelector_->itemData(i).toString() == s) {
-        portSelector_->removeItem(i);
+    for (int i = 0; i < ui_.portSelector->count(); i++) {
+      if (ui_.portSelector->itemData(i).type() == QVariant::String &&
+          ui_.portSelector->itemData(i).toString() == s) {
+        ui_.portSelector->removeItem(i);
         break;
       }
     }
   }
 
   for (const auto& s : to_add) {
-    portSelector_->addItem(s, s);
+    ui_.portSelector->addItem(s, s);
   }
 }
 
 void MainDialog::detectPorts() {
+  if (hal_ == nullptr) {
+    qFatal("No HAL instance");
+  }
   if (!skip_detect_warning_) {
     auto choice = QMessageBox::warning(
         this, tr("Warning"),
@@ -539,33 +481,47 @@ void MainDialog::detectPorts() {
       skip_detect_warning_ = true;
     }
   }
-  detectBtn_->setDisabled(true);
-  portSelector_->setDisabled(true);
+  ui_.detectBtn->setDisabled(true);
+  ui_.portSelector->setDisabled(true);
 
-  portSelector_->clear();
+  ui_.portSelector->clear();
   auto ports = QSerialPortInfo::availablePorts();
   int firstDetected = -1;
   for (int i = 0; i < ports.length(); i++) {
     QString prefix = "";
-    if (ESP8266::probe(ports[i]).ok()) {
+    if (hal_->probe(ports[i]).ok()) {
       prefix = "✓ ";
       if (firstDetected < 0) {
         firstDetected = i;
       }
     }
-    portSelector_->addItem(prefix + ports[i].portName(), ports[i].portName());
+    ui_.portSelector->addItem(prefix + ports[i].portName(),
+                              ports[i].portName());
   }
 
   if (firstDetected >= 0) {
-    portSelector_->setCurrentIndex(firstDetected);
+    ui_.portSelector->setCurrentIndex(firstDetected);
+  } else {
+    QMessageBox::information(
+        this, tr("No devices detected"),
+        tr("Could not detect the device on any of serial ports. Make sure the "
+           "device is properly wired and connected and you have drivers for "
+           "the USB-to-serial adapter. See <a "
+           "href=\"https://github.com/cesanta/smart.js/blob/master/platforms/"
+           "esp8266/flashing.md\">this page</a> for more details."));
   }
 
-  portSelector_->setDisabled(false);
-  detectBtn_->setDisabled(false);
+  ui_.portSelector->setDisabled(false);
+  ui_.detectBtn->setDisabled(false);
 }
 
 void MainDialog::flashingDone(QString msg, bool success) {
   Q_UNUSED(msg);
+  ui_.progressBar->hide();
+  if (scroll_after_flashing_) {
+    auto* scroll = ui_.terminal->verticalScrollBar();
+    scroll->setValue(scroll->maximum());
+  }
   // TODO(imax): provide a command-line option for terminal speed.
   serial_port_->setBaudRate(115200);
   setState(Connected);
@@ -574,46 +530,54 @@ void MainDialog::flashingDone(QString msg, bool success) {
     return;
   }
   if (success) {
-    terminal_->appendPlainText(tr("--- flashed successfully"));
+    ui_.terminal->appendPlainText(tr("--- flashed successfully"));
     connectDisconnectTerminal();
+    ui_.statusMessage->hide();
   } else {
     closeSerial();
   }
 }
 
 void MainDialog::updateFWList() {
-  QDir dir(fwDir_.absoluteFilePath("esp8266"));
+  if (hal_ == nullptr) {
+    qFatal("No HAL instance");
+  }
+  ui_.firmwareSelector->clear();
+  QDir dir(fwDir_.absoluteFilePath(QString::fromStdString(hal_->name())));
   dir.setFilter(QDir::Dirs | QDir::NoDotAndDotDot);
-  fwSelector_->clear();
-  fwSelector_->addItems(dir.entryList());
+  ui_.firmwareSelector->addItems(dir.entryList());
 }
 
 void MainDialog::loadFirmware() {
-  QString name = fwSelector_->currentText();
+  if (hal_ == nullptr) {
+    qFatal("No HAL instance");
+  }
+  QString name = ui_.firmwareSelector->currentText();
   QString path;
   if (name != "") {
-    path = fwDir_.absoluteFilePath("esp8266/" + name);
+    path = fwDir_.absoluteFilePath(QString::fromStdString(hal_->name()) + "/" +
+                                   name);
   } else {
     path = QFileDialog::getExistingDirectory(this,
                                              tr("Load firmware from directory"),
                                              "", QFileDialog::ShowDirsOnly);
     if (path.isEmpty()) {
-      flashingStatus_->setText(tr("No firmware selected"));
+      ui_.statusMessage->setText(tr("No firmware selected"));
       return;
     }
   }
-  QString portName = portSelector_->currentData().toString();
+  QString portName = ui_.portSelector->currentData().toString();
   if (portName == "") {
-    flashingStatus_->setText(tr("No port selected"));
+    ui_.statusMessage->setText(tr("No port selected"));
   }
-  std::unique_ptr<Flasher> f(ESP8266::flasher());
+  std::unique_ptr<Flasher> f(hal_->flasher());
   util::Status s = f->setOptionsFromCommandLine(*parser_);
   if (!s.ok()) {
     qWarning() << "Some options have invalid values:" << s.ToString().c_str();
   }
   util::Status err = f->load(path);
   if (!err.ok()) {
-    flashingStatus_->setText(err.error_message().c_str());
+    ui_.statusMessage->setText(err.error_message().c_str());
     return;
   }
   if (state_ == Terminal) {
@@ -621,11 +585,11 @@ void MainDialog::loadFirmware() {
   }
   err = openSerial();
   if (!err.ok()) {
-    flashingStatus_->setText(err.error_message().c_str());
+    ui_.statusMessage->setText(err.error_message().c_str());
     return;
   }
   if (state_ != Connected) {
-    flashingStatus_->setText(tr("port is not connected"));
+    ui_.statusMessage->setText(tr("port is not connected"));
     return;
   }
   int speed = 230400;
@@ -637,7 +601,7 @@ void MainDialog::loadFirmware() {
       speed = 230400;
     }
   }
-  qWarning() << "Flashing at " << speed << "(real speed may be different)";
+  qInfo() << "Flashing at " << speed << "(real speed may be different)";
   // First we set speed to 115200 and only then set it to the value requested.
   // We do this because Qt may silently refuse to set the speed, leaving the
   // the previous value in effect. If it fails to set 115200 - we're screwed
@@ -651,20 +615,28 @@ void MainDialog::loadFirmware() {
   setState(Flashing);
   err = f->setPort(serial_port_.get());
   if (!err.ok()) {
-    flashingStatus_->setText(err.error_message().c_str());
+    ui_.statusMessage->setText(err.error_message().c_str());
     return;
   }
-  flashingProgress_->setRange(0, f->totalBlocks());
-  flashingProgress_->setValue(0);
-  connect(f.get(), &Flasher::progress, flashingProgress_,
+
+  // Check if the terminal is scrolled down to the bottom before showing
+  // progress bar, so we can scroll it back again after we're done.
+  auto* scroll = ui_.terminal->verticalScrollBar();
+  scroll_after_flashing_ = scroll->value() == scroll->maximum();
+  ui_.progressBar->show();
+  ui_.statusMessage->show();
+  ui_.progressBar->setRange(0, f->totalBlocks());
+  ui_.progressBar->setValue(0);
+  connect(f.get(), &Flasher::progress, ui_.progressBar,
           &QProgressBar::setValue);
-  connect(f.get(), &Flasher::done, flashingStatus_, &QLabel::setText);
+  connect(f.get(), &Flasher::done, ui_.statusMessage, &QLabel::setText);
   connect(f.get(), &Flasher::done,
           [this]() { serial_port_->moveToThread(this->thread()); });
-  connect(f.get(), &Flasher::statusMessage, flashingStatus_, &QLabel::setText);
+  connect(f.get(), &Flasher::statusMessage, ui_.statusMessage,
+          &QLabel::setText);
   connect(f.get(), &Flasher::statusMessage, [](QString msg, bool important) {
     if (important) {
-      qWarning() << msg.toUtf8().constData();
+      qInfo() << msg.toUtf8().constData();
     }
   });
   connect(f.get(), &Flasher::done, this, &MainDialog::flashingDone);
@@ -679,36 +651,17 @@ void MainDialog::loadFirmware() {
   f.release();
 }
 
-void MainDialog::setTerminalColors(bool system) {
-  if (system) {
-    terminal_->setPalette(palette());
-  } else {
-    QPalette p = palette();
-    p.setColor(QPalette::Base, Qt::black);
-    p.setColor(QPalette::Text, Qt::darkGreen);
-    terminal_->setPalette(p);
-  }
-  settings_.setValue("terminal/systemColors", system);
-}
-
-void MainDialog::selectFSDir() {
-}
-
-void MainDialog::syncFrom() {
-}
-
-void MainDialog::syncTo() {
-}
-
 void MainDialog::showAboutBox() {
-  QMessageBox::about(
-      this, tr("Smart.js flashing tool"),
-      tr("Smart.js flashing tool\nVersion %1\nhttps://smartjs.io")
-          .arg(qApp->applicationVersion()));
+  QWidget* w = new QWidget;
+  Ui_About about;
+  about.setupUi(w);
+  about.versionLabel->setText(
+      tr("Version: %1").arg(qApp->applicationVersion()));
+  w->show();
 }
 
 bool MainDialog::eventFilter(QObject* obj, QEvent* e) {
-  if (obj != terminal_input_) {
+  if (obj != ui_.terminalInput) {
     return QMainWindow::eventFilter(obj, e);
   }
   if (e->type() == QEvent::KeyPress) {
@@ -719,11 +672,11 @@ bool MainDialog::eventFilter(QObject* obj, QEvent* e) {
       }
       if (history_cursor_ < 0) {
         history_cursor_ = input_history_.length() - 1;
-        incomplete_input_ = terminal_input_->text();
+        incomplete_input_ = ui_.terminalInput->text();
       } else {
         history_cursor_ -= history_cursor_ > 0 ? 1 : 0;
       }
-      terminal_input_->setText(input_history_[history_cursor_]);
+      ui_.terminalInput->setText(input_history_[history_cursor_]);
       return true;
     } else if (key->key() == Qt::Key_Down) {
       if (input_history_.length() == 0 || history_cursor_ < 0) {
@@ -731,10 +684,10 @@ bool MainDialog::eventFilter(QObject* obj, QEvent* e) {
       }
       if (history_cursor_ < input_history_.length() - 1) {
         history_cursor_++;
-        terminal_input_->setText(input_history_[history_cursor_]);
+        ui_.terminalInput->setText(input_history_[history_cursor_]);
       } else {
         history_cursor_ = -1;
-        terminal_input_->setText(incomplete_input_);
+        ui_.terminalInput->setText(incomplete_input_);
       }
       return true;
     }
@@ -746,20 +699,6 @@ void MainDialog::closeEvent(QCloseEvent* event) {
   settings_.setValue("window/geometry", saveGeometry());
   settings_.setValue("window/state", saveState());
   QMainWindow::closeEvent(event);
-}
-
-void MainDialog::doAction(int index) {
-  actionSelector_->setCurrentIndex(0);
-  switch (actionSelector_->itemData(index).toInt()) {
-    case None:
-      break;
-    case ConfigureWiFi:
-      configureWiFi();
-      break;
-    case UploadFile:
-      uploadFile();
-      break;
-  }
 }
 
 void MainDialog::configureWiFi() {

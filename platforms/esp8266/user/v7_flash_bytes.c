@@ -1,10 +1,17 @@
 #ifdef V7_ESP_FLASH_ACCESS_EMUL
 
+#ifndef RTOS_SDK
 #include "user_interface.h"
+#else
+#include <c_types.h>
+#include <stdio.h>
+#endif
 
+#include <stdio.h>
 #include "v7_gdb.h"
 #include "xtensa/corebits.h"
 #include "v7_esp_hw.h"
+#include "esp_missing_includes.h"
 
 /*
  * Only the L32I, L32I.N, and L32R load instructions can access InstRAM
@@ -18,7 +25,6 @@
  * instruction and resumes execution.
  */
 void flash_emul_exception_handler(struct xtos_saved_regs *frame) {
-  int i;
   uint32_t vaddr = RSR(EXCVADDR);
   /*
    * Xtensa instructions are 24-bit wide.
@@ -42,7 +48,7 @@ void flash_emul_exception_handler(struct xtos_saved_regs *frame) {
   uint32_t instr = read_unaligned_byte((uint8_t *) frame->pc) |
                    (read_unaligned_byte((uint8_t *) frame->pc + 1) << 8);
   uint8_t at = (instr >> 4) & 0xf;
-  uint32_t val;
+  uint32_t val = 0;
 
   if ((instr & 0xf00f) == 0x2) {
     /* l8ui at, as, imm       r = 0 */
@@ -70,8 +76,12 @@ void flash_emul_exception_handler(struct xtos_saved_regs *frame) {
 }
 
 void flash_emul_init() {
+#ifndef RTOS_TODO
   _xtos_set_exception_handler(EXCCAUSE_LOAD_STORE_ERROR,
                               flash_emul_exception_handler);
+#else
+  printf("_xtos_set_exception_handler missing\n");
+#endif
 }
 
 #endif /* V7_ESP_FLASH_ACCESS_EMUL */
