@@ -1,16 +1,28 @@
-// compat
-$ = {};
-$.extend = function(a, b) {
-    for(k in b) a[k] = b[k];
-    return a;
-};
+// initialization.
+// Don't store functions declared here in the object graph
+// this way the AST for this module is thrown away after init
+// put the rest in sys_rts.js
 
-$.each = function(a, f) {
-    a.forEach(function(v, i) {f(i, v)});
-};
+File.eval("sys_rts.js");
 
-console = {};
-console.log = print;
+conf = File.loadJSON('sys_config.json');
+if (typeof(conf) == 'undefined') {
+  conf = {
+    dev: {
+      // TODO(lsm): refactor to initialize ID and PSK lazily on first
+      // clubby request, get those from the cloud
+      id: '//api.cesanta.com/d/dev_' + Math.random().toString(36).substring(7),
+      key: 'psk_' + Math.random().toString(36).substring(7)
+    },
+    cloud: '//api.cesanta.com'
+  };
+}
+SJS.init();
+conf.save();
 
-File.eval("clubby.js");
-clubby = new Clubby({url:"ws://api.cesanta.com:80", "src": conf.dev.id, "key": conf.dev.key})
+print('')
+print('Device id: ' + conf.dev.id);
+print('Device psk: ' + conf.dev.key);
+print('Cloud: ' + conf.cloud);
+
+File.eval("user.js")

@@ -90,31 +90,48 @@ enum v7_err {
   V7_SYNTAX_ERROR,
   V7_EXEC_EXCEPTION,
   V7_STACK_OVERFLOW,
-  V7_AST_TOO_LARGE
+  V7_AST_TOO_LARGE,
+  V7_INVALID_ARG
 };
 
 /*
- * Execute JavaScript `js_code`, store result in `result` variable.
+ * Execute JavaScript `js_code`. The result of evaluation is stored in
+ * the `result` variable.
+ *
  * Return:
  *
  *  - V7_OK on success. `result` contains the result of execution.
  *  - V7_SYNTAX_ERROR if `js_code` in not a valid code. `result` is undefined.
  *  - V7_EXEC_EXCEPTION if `js_code` threw an exception. `result` stores
  *    an exception object.
+ *  - V7_AST_TOO_LARGE if `js_code` contains an AST segment longer than 16 bit.
+ *    `result` is undefined. To avoid this error, build V7 with V7_LARGE_AST.
  */
-enum v7_err v7_exec(struct v7 *, v7_val_t *result, const char *js_code);
+enum v7_err v7_exec(struct v7 *, const char *js_code, v7_val_t *result);
 
 /*
  * Same as `v7_exec()`, but loads source code from `path` file.
  */
-enum v7_err v7_exec_file(struct v7 *, v7_val_t *result, const char *path);
+enum v7_err v7_exec_file(struct v7 *, const char *path, v7_val_t *result);
 
 /*
  * Same as `v7_exec()`, but passes `this_obj` as `this` to the execution
  * context.
  */
-enum v7_err v7_exec_with(struct v7 *, v7_val_t *result, const char *js_code,
-                         v7_val_t this_obj);
+enum v7_err v7_exec_with(struct v7 *, const char *js_code, v7_val_t this_obj,
+                         v7_val_t *result);
+
+/*
+ * Parse `str` and store corresponding JavaScript object in `res` variable.
+ * String `str` should be '\0'-terminated.
+ * Return value and semantic is the same as for `v7_exec()`.
+ */
+enum v7_err v7_parse_json(struct v7 *, const char *str, v7_val_t *res);
+
+/*
+ * Same as `v7_parse_json()`, but loads JSON string from `path`.
+ */
+enum v7_err v7_parse_json_file(struct v7 *, const char *path, v7_val_t *res);
 
 /*
  * Compile JavaScript code `js_code` into the byte code and write generated
@@ -216,6 +233,12 @@ int v7_is_foreign(v7_val_t);
 /* Return true if given value is an array object */
 int v7_is_array(struct v7 *, v7_val_t);
 
+/* Return true if the object is an instance of a given constructor */
+int v7_is_instanceof(struct v7 *, v7_val_t o, const char *c);
+
+/* Return true if the object is an instance of a given constructor */
+int v7_is_instanceof_v(struct v7 *, v7_val_t o, v7_val_t c);
+
 /* Return `void *` pointer stored in `v7_val_t` */
 void *v7_to_foreign(v7_val_t);
 
@@ -240,7 +263,10 @@ v7_cfunction_t v7_to_cfunction(v7_val_t);
 const char *v7_to_string(struct v7 *, v7_val_t *value, size_t *string_len);
 
 /* Return root level (`global`) object of the given V7 instance. */
-v7_val_t v7_get_global_object(struct v7 *);
+v7_val_t v7_get_global(struct v7 *);
+
+/* Return current `this` object. */
+v7_val_t v7_get_this(struct v7 *);
 
 /*
  * Lookup property `name`, `len` in object `obj`. If `obj` holds no such
@@ -409,6 +435,12 @@ int v7_disown(struct v7 *v7, v7_val_t *v);
 /* Prints stack trace recorded in the exception `e` to file `f` */
 void v7_fprint_stack_trace(FILE *f, struct v7 *v7, v7_val_t e);
 
+/* Print error object message and possibly stack trace to f */
+void v7_print_error(FILE *f, struct v7 *v7, const char *ctx, v7_val_t e);
+
+/* Print JS value `v` to the open file strean `f` */
+void v7_fprintln(FILE *f, struct v7 *v7, v7_val_t v);
+
 int v7_main(int argc, char *argv[], void (*init_func)(struct v7 *),
             void (*fini_func)(struct v7 *));
 
@@ -449,6 +481,7 @@ int v7_main(int argc, char *argv[], void (*init_func)(struct v7 *),
  */
 
 #define V7_ENABLE__Array__reduce 1
+#define V7_ENABLE__Blob 1
 #define V7_ENABLE__Date 1
 #define V7_ENABLE__Date__UTC 1
 #define V7_ENABLE__Date__getters 1
@@ -459,6 +492,7 @@ int v7_main(int argc, char *argv[], void (*init_func)(struct v7 *),
 #define V7_ENABLE__Date__toLocaleString 1
 #define V7_ENABLE__Date__toString 1
 #define V7_ENABLE__File__list 1
+#define V7_ENABLE__Function__bind 1
 #define V7_ENABLE__Function__call 1
 #define V7_ENABLE__Math 1
 #define V7_ENABLE__Math__abs 1
@@ -865,8 +899,8 @@ char *utfutf(char *s1, char *s2);
 #ifndef OSDEP_HEADER_INCLUDED
 #define OSDEP_HEADER_INCLUDED
 
-#if !defined(NS_DISABLE_FILESYSTEM) && defined(AVR_NOFS)
-#define NS_DISABLE_FILESYSTEM
+#if !defined(MG_DISABLE_FILESYSTEM) && defined(AVR_NOFS)
+#define MG_DISABLE_FILESYSTEM
 #endif
 
 #undef UNICODE                /* Use ANSI WinAPI functions */
@@ -950,6 +984,7 @@ char *utfutf(char *s1, char *s2);
 #endif
 
 #ifdef _WIN32
+#define random() rand()
 #ifdef _MSC_VER
 #pragma comment(lib, "ws2_32.lib") /* Linking with winsock library */
 #endif
@@ -977,12 +1012,16 @@ char *utfutf(char *s1, char *s2);
 #else
 #define fseeko(x, y, z) fseek((x), (y), (z))
 #endif
+#define random() rand()
 typedef int socklen_t;
+typedef signed char int8_t;
 typedef unsigned char uint8_t;
+typedef int int32_t;
 typedef unsigned int uint32_t;
+typedef short int16_t;
 typedef unsigned short uint16_t;
-typedef unsigned __int64 uint64_t;
 typedef __int64 int64_t;
+typedef unsigned __int64 uint64_t;
 typedef SOCKET sock_t;
 typedef uint32_t in_addr_t;
 #ifndef UINT16_MAX
@@ -997,9 +1036,9 @@ typedef uint32_t in_addr_t;
 #define INT64_FMT "I64d"
 #define SIZE_T_FMT "Iu"
 #ifdef __MINGW32__
-typedef struct stat ns_stat_t;
+typedef struct stat cs_stat_t;
 #else
-typedef struct _stati64 ns_stat_t;
+typedef struct _stati64 cs_stat_t;
 #endif
 #ifndef S_ISDIR
 #define S_ISDIR(x) ((x) &_S_IFDIR)
@@ -1021,18 +1060,20 @@ DIR *opendir(const char *name);
 int closedir(DIR *dir);
 struct dirent *readdir(DIR *dir);
 
-#elif /* not _WIN32 */ defined(NS_CC3200)
+#elif /* not _WIN32 */ defined(MG_CC3200)
 
 #include <fcntl.h>
 #include <unistd.h>
 #include <cc3200_libc.h>
 #include <cc3200_socket.h>
 
-#elif /* not CC3200 */ defined(NS_ESP8266) && defined(RTOS_SDK)
+#elif /* not CC3200 */ defined(MG_ESP8266) && defined(RTOS_SDK)
 
 #include <lwip/sockets.h>
 #include <lwip/netdb.h>
 #include <lwip/dns.h>
+#include <esp_libc.h>
+#define random() os_random()
 /* TODO(alashkin): check if zero is OK */
 #define SOMAXCONN 0
 #include <stdlib.h>
@@ -1044,7 +1085,7 @@ struct dirent *readdir(DIR *dir);
 #include <netdb.h>
 #include <pthread.h>
 #include <unistd.h>
-#include <arpa/inet.h> /* For inet_pton() when NS_ENABLE_IPV6 is defined */
+#include <arpa/inet.h> /* For inet_pton() when MG_ENABLE_IPV6 is defined */
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/select.h>
@@ -1056,7 +1097,7 @@ struct dirent *readdir(DIR *dir);
 #include <stdarg.h>
 
 #ifndef AVR_LIBC
-#ifndef NS_ESP8266
+#ifndef MG_ESP8266
 #define closesocket(x) close(x)
 #endif
 #ifndef __cdecl
@@ -1065,10 +1106,14 @@ struct dirent *readdir(DIR *dir);
 
 #define INVALID_SOCKET (-1)
 #define INT64_FMT PRId64
+#if defined(ESP8266) || defined(MG_ESP8266)
+#define SIZE_T_FMT "u"
+#else
 #define SIZE_T_FMT "zu"
+#endif
 #define to64(x) strtoll(x, NULL, 10)
 typedef int sock_t;
-typedef struct stat ns_stat_t;
+typedef struct stat cs_stat_t;
 #define DIRSEP '/'
 #endif /* !AVR_LIBC */
 
@@ -1085,7 +1130,7 @@ int64_t strtoll(const char *str, char **endptr, int base);
     fflush(stdout);             \
   } while (0)
 
-#ifdef NS_ENABLE_DEBUG
+#ifdef MG_ENABLE_DEBUG
 #define DBG __DBG
 #else
 #define DBG(x)
@@ -1108,11 +1153,29 @@ int64_t strtoll(const char *str, char **endptr, int base);
 #if !defined(BASE64_H_INCLUDED) && !defined(DISABLE_BASE64)
 #define BASE64_H_INCLUDED
 
+#include <stdio.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+typedef void (*cs_base64_putc_t)(char, void *);
+
+struct cs_base64_ctx {
+  /* cannot call it putc because it's a macro on some environments */
+  cs_base64_putc_t b64_putc;
+  unsigned char chunk[3];
+  int chunk_size;
+  void *user_data;
+};
+
+void cs_base64_init(struct cs_base64_ctx *ctx, cs_base64_putc_t putc,
+                    void *user_data);
+void cs_base64_update(struct cs_base64_ctx *ctx, const char *str, size_t len);
+void cs_base64_finish(struct cs_base64_ctx *ctx);
+
 void cs_base64_encode(const unsigned char *src, int src_len, char *dst);
+void cs_fprint_base64(FILE *f, const unsigned char *src, int src_len);
 int cs_base64_decode(const unsigned char *s, int len, char *dst);
 
 #ifdef __cplusplus
@@ -1161,8 +1224,8 @@ void MD5_Final(unsigned char *md, MD5_CTX *c);
  * All rights reserved
  */
 
-#if !defined(NS_SHA1_HEADER_INCLUDED) && !defined(DISABLE_SHA1)
-#define NS_SHA1_HEADER_INCLUDED
+#if !defined(MG_SHA1_HEADER_INCLUDED) && !defined(DISABLE_SHA1)
+#define MG_SHA1_HEADER_INCLUDED
 
 /* Amalgamated: #include "osdep.h" */
 
@@ -1174,18 +1237,18 @@ typedef struct {
   uint32_t state[5];
   uint32_t count[2];
   unsigned char buffer[64];
-} SHA1_CTX;
+} cs_sha1_ctx;
 
-void SHA1Init(SHA1_CTX *);
-void SHA1Update(SHA1_CTX *, const unsigned char *data, uint32_t len);
-void SHA1Final(unsigned char digest[20], SHA1_CTX *);
-void hmac_sha1(const unsigned char *key, size_t key_len,
-               const unsigned char *text, size_t text_len,
-               unsigned char out[20]);
+void cs_sha1_init(cs_sha1_ctx *);
+void cs_sha1_update(cs_sha1_ctx *, const unsigned char *data, uint32_t len);
+void cs_sha1_final(unsigned char digest[20], cs_sha1_ctx *);
+void cs_hmac_sha1(const unsigned char *key, size_t key_len,
+                  const unsigned char *text, size_t text_len,
+                  unsigned char out[20]);
 #ifdef __cplusplus
 }
 #endif /* __cplusplus */
-#endif /* NS_SHA1_HEADER_INCLUDED */
+#endif /* MG_SHA1_HEADER_INCLUDED */
 #ifdef V7_MODULE_LINES
 #line 1 "./src/../../common/str_util.h"
 /**/
@@ -1208,10 +1271,73 @@ extern "C" {
 int c_snprintf(char *buf, size_t buf_size, const char *format, ...);
 int c_vsnprintf(char *buf, size_t buf_size, const char *format, va_list ap);
 
+#if !(_XOPEN_SOURCE >= 700 || _POSIX_C_SOURCE >= 200809L) &&    \
+        !(__DARWIN_C_LEVEL >= 200809L) && !defined(RTOS_SDK) || \
+    defined(_WIN32)
+int strnlen(const char *s, size_t maxlen);
+#endif
+
 #ifdef __cplusplus
 }
 #endif
 #endif
+#ifdef V7_MODULE_LINES
+#line 1 "./src/../../common/ubjson.h"
+/**/
+#endif
+/*
+ * Copyright (c) 2015 Cesanta Software Limited
+ * All rights reserved
+ */
+
+#ifndef CS_UBJSON_H_INCLUDED
+#define CS_UBJSON_H_INCLUDED
+
+/* Amalgamated: #include "osdep.h" */
+/* Amalgamated: #include "mbuf.h" */
+
+void cs_ubjson_emit_null(struct mbuf *buf);
+void cs_ubjson_emit_boolean(struct mbuf *buf, int v);
+
+void cs_ubjson_emit_int8(struct mbuf *buf, int8_t v);
+void cs_ubjson_emit_uint8(struct mbuf *buf, uint8_t v);
+void cs_ubjson_emit_int16(struct mbuf *buf, int16_t v);
+void cs_ubjson_emit_int32(struct mbuf *buf, int32_t v);
+void cs_ubjson_emit_int64(struct mbuf *buf, int64_t v);
+void cs_ubjson_emit_autoint(struct mbuf *buf, int64_t v);
+void cs_ubjson_emit_float32(struct mbuf *buf, float v);
+void cs_ubjson_emit_float64(struct mbuf *buf, double v);
+void cs_ubjson_emit_autonumber(struct mbuf *buf, double v);
+void cs_ubjson_emit_size(struct mbuf *buf, size_t v);
+void cs_ubjson_emit_string(struct mbuf *buf, const char *s, size_t len);
+void cs_ubjson_emit_bin_header(struct mbuf *buf, size_t len);
+void cs_ubjson_emit_bin(struct mbuf *buf, const char *s, size_t len);
+
+void cs_ubjson_open_object(struct mbuf *buf);
+void cs_ubjson_emit_object_key(struct mbuf *buf, const char *s, size_t len);
+void cs_ubjson_close_object(struct mbuf *buf);
+
+void cs_ubjson_open_array(struct mbuf *buf);
+void cs_ubjson_close_array(struct mbuf *buf);
+
+#endif
+#ifdef V7_MODULE_LINES
+#line 1 "./src/../../common/cs_file.h"
+/**/
+#endif
+/*
+ * Copyright (c) 2015 Cesanta Software Limited
+ * All rights reserved
+ */
+
+/*
+ * Read whole file `path` in memory. It is responsibility of the caller
+ * to `free()` allocated memory. File content is guaranteed to be
+ * '\0'-terminated. File size is returned in `size` variable, which does not
+ * count terminating `\0`.
+ * Return: allocated memory, or NULL on error.
+ */
+char *cs_read_file(const char *path, size_t *size);
 #ifdef V7_MODULE_LINES
 #line 1 "./src/../builtin/builtin.h"
 /**/
@@ -1348,6 +1474,7 @@ int c_vsnprintf(char *buf, size_t buf_size, const char *format, va_list ap);
 void init_file(struct v7 *);
 void init_socket(struct v7 *);
 void init_crypto(struct v7 *);
+void init_ubjson(struct v7 *);
 
 #endif
 #ifdef V7_MODULE_LINES
@@ -1368,6 +1495,8 @@ void init_crypto(struct v7 *);
 #if defined(__cplusplus)
 extern "C" {
 #endif /* __cplusplus */
+
+#define BIN_AST_SIGNATURE "V\007ASTV10"
 
 enum ast_tag {
   AST_NOP,
@@ -1585,7 +1714,7 @@ struct v7_pstate {
   int in_strict;    /* True if in strict mode */
 };
 
-V7_PRIVATE enum v7_err parse(struct v7 *, struct ast *, const char *, int);
+V7_PRIVATE enum v7_err parse(struct v7 *, struct ast *, const char *, int, int);
 
 #if defined(__cplusplus)
 }
@@ -1682,6 +1811,7 @@ struct gc_arena {
 #define NOINLINE
 #endif
 
+#undef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
 #include <assert.h>
@@ -1739,7 +1869,7 @@ typedef unsigned long uintptr_t;
 /* Amalgamated: #include "builtin.h" */
 
 /* Max captures for String.replace() */
-#define V7_RE_MAX_REPL_SUB 255
+#define V7_RE_MAX_REPL_SUB 20
 
 /* MSVC6 doesn't have standard C math constants defined */
 #ifndef M_E
@@ -1908,7 +2038,7 @@ struct v7 {
   val_t error_objects[ERROR_CTOR_MAX];
 
   val_t thrown_error;
-  char error_msg[60];     /* Exception message */
+  char error_msg[80];     /* Exception message */
   int creating_exception; /* Avoids reentrant exception creation */
 #if defined(__cplusplus)
   ::jmp_buf jmp_buf;
@@ -1946,6 +2076,10 @@ struct v7 {
 #ifdef V7_ENABLE_GC_CHECK
   struct v7 *next_v7; /* linked list of v7 contexts, needed by gc check hooks */
 #endif
+
+#ifdef V7_MALLOC_GC
+  struct mbuf malloc_trace;
+#endif
 };
 
 enum jmp_type { NO_JMP, THROW_JMP, BREAK_JMP, CONTINUE_JMP };
@@ -1978,13 +2112,6 @@ struct v7_vec {
     if (!(COND)) throw_exception(v7, INTERNAL_ERROR, "line %d", __LINE__); \
   } while (0)
 #endif
-
-#define TRACE_VAL(v7, val)                                     \
-  do {                                                         \
-    char buf[200], *p = v7_to_json(v7, val, buf, sizeof(buf)); \
-    printf("%s %d: [%s]\n", __func__, __LINE__, p);            \
-    if (p != buf) free(p);                                     \
-  } while (0)
 
 #if defined(__cplusplus)
 extern "C" {
@@ -2257,7 +2384,7 @@ V7_PRIVATE int to_str(struct v7 *v7, val_t v, char *buf, size_t size,
                       int as_json);
 V7_PRIVATE void v7_destroy_property(struct v7_property **p);
 V7_PRIVATE val_t i_value_of(struct v7 *v7, val_t v);
-V7_PRIVATE val_t _std_eval(struct v7 *v7, val_t args, char before, char after);
+V7_PRIVATE v7_val_t std_eval(struct v7 *, v7_val_t, v7_val_t, int);
 
 /* String API */
 V7_PRIVATE int s_cmp(struct v7 *, val_t a, val_t b);
@@ -2654,7 +2781,7 @@ void mbuf_remove(struct mbuf *mb, size_t n) {
  * ANY REPRESENTATION OR WARRANTY OF ANY KIND CONCERNING THE MERCHANTABILITY
  * OF THIS SOFTWARE OR ITS FITNESS FOR ANY PARTICULAR PURPOSE.
  */
- 
+
 #ifndef EXCLUDE_COMMON
 
 #ifndef NO_LIBC
@@ -3991,9 +4118,9 @@ Rune tolowerrune(Rune c) {
 Rune toupperrune(Rune c) {
   return toupper(c);
 }
-int utfnlen(char *s, long m) { /* Could use strnlen but it's from POSIX 2008. */
+int utfnlen(char *s, long m) {
   (void) s;
-  return m;
+  return (int) strnlen(s, (size_t) m);
 }
 
 char *utfnshift(char *s, long m) {
@@ -4015,31 +4142,135 @@ char *utfnshift(char *s, long m) {
 #ifndef EXCLUDE_COMMON
 
 /* Amalgamated: #include "base64.h" */
+#include <string.h>
+
+/* ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/ */
+
+#define NUM_UPPERCASES ('Z' - 'A' + 1)
+#define NUM_LETTERS (NUM_UPPERCASES * 2)
+#define NUM_DIGITS ('9' - '0' + 1)
+
+/*
+ * Emit a base64 code char.
+ *
+ * Doesn't use memory, thus it's safe to use to safely dump memory in crashdumps
+ */
+static void cs_base64_emit_code(struct cs_base64_ctx *ctx, int v) {
+  if (v < NUM_UPPERCASES) {
+    ctx->b64_putc(v + 'A', ctx->user_data);
+  } else if (v < (NUM_LETTERS)) {
+    ctx->b64_putc(v - NUM_UPPERCASES + 'a', ctx->user_data);
+  } else if (v < (NUM_LETTERS + NUM_DIGITS)) {
+    ctx->b64_putc(v - NUM_LETTERS + '0', ctx->user_data);
+  } else {
+    ctx->b64_putc(v - NUM_LETTERS - NUM_DIGITS == 0 ? '+' : '/',
+                  ctx->user_data);
+  }
+}
+
+static void cs_base64_emit_chunk(struct cs_base64_ctx *ctx) {
+  int a, b, c;
+
+  a = ctx->chunk[0];
+  b = ctx->chunk[1];
+  c = ctx->chunk[2];
+
+  cs_base64_emit_code(ctx, a >> 2);
+  cs_base64_emit_code(ctx, ((a & 3) << 4) | (b >> 4));
+  if (ctx->chunk_size > 1) {
+    cs_base64_emit_code(ctx, (b & 15) << 2 | (c >> 6));
+  }
+  if (ctx->chunk_size > 2) {
+    cs_base64_emit_code(ctx, c & 63);
+  }
+}
+
+void cs_base64_init(struct cs_base64_ctx *ctx, cs_base64_putc_t b64_putc,
+                    void *user_data) {
+  ctx->chunk_size = 0;
+  ctx->b64_putc = b64_putc;
+  ctx->user_data = user_data;
+}
+
+void cs_base64_update(struct cs_base64_ctx *ctx, const char *str, size_t len) {
+  const unsigned char *src = (const unsigned char *) str;
+  size_t i;
+  for (i = 0; i < len; i++) {
+    ctx->chunk[ctx->chunk_size++] = src[i];
+    if (ctx->chunk_size == 3) {
+      cs_base64_emit_chunk(ctx);
+      ctx->chunk_size = 0;
+    }
+  }
+}
+
+void cs_base64_finish(struct cs_base64_ctx *ctx) {
+  if (ctx->chunk_size > 0) {
+    int i;
+    memset(&ctx->chunk[ctx->chunk_size], 0, 3 - ctx->chunk_size);
+    cs_base64_emit_chunk(ctx);
+    for (i = 0; i < (3 - ctx->chunk_size); i++) {
+      ctx->b64_putc('=', ctx->user_data);
+    }
+  }
+}
+
+#define BASE64_ENCODE_BODY                                                \
+  static const char *b64 =                                                \
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"; \
+  int i, j, a, b, c;                                                      \
+                                                                          \
+  for (i = j = 0; i < src_len; i += 3) {                                  \
+    a = src[i];                                                           \
+    b = i + 1 >= src_len ? 0 : src[i + 1];                                \
+    c = i + 2 >= src_len ? 0 : src[i + 2];                                \
+                                                                          \
+    BASE64_OUT(b64[a >> 2]);                                              \
+    BASE64_OUT(b64[((a & 3) << 4) | (b >> 4)]);                           \
+    if (i + 1 < src_len) {                                                \
+      BASE64_OUT(b64[(b & 15) << 2 | (c >> 6)]);                          \
+    }                                                                     \
+    if (i + 2 < src_len) {                                                \
+      BASE64_OUT(b64[c & 63]);                                            \
+    }                                                                     \
+  }                                                                       \
+                                                                          \
+  while (j % 4 != 0) {                                                    \
+    BASE64_OUT('=');                                                      \
+  }                                                                       \
+  BASE64_FLUSH()
+
+#define BASE64_OUT(ch) \
+  do {                 \
+    dst[j++] = (ch);   \
+  } while (0)
+
+#define BASE64_FLUSH() \
+  do {                 \
+    dst[j++] = '\0';   \
+  } while (0)
 
 void cs_base64_encode(const unsigned char *src, int src_len, char *dst) {
-  static const char *b64 =
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  int i, j, a, b, c;
-
-  for (i = j = 0; i < src_len; i += 3) {
-    a = src[i];
-    b = i + 1 >= src_len ? 0 : src[i + 1];
-    c = i + 2 >= src_len ? 0 : src[i + 2];
-
-    dst[j++] = b64[a >> 2];
-    dst[j++] = b64[((a & 3) << 4) | (b >> 4)];
-    if (i + 1 < src_len) {
-      dst[j++] = b64[(b & 15) << 2 | (c >> 6)];
-    }
-    if (i + 2 < src_len) {
-      dst[j++] = b64[c & 63];
-    }
-  }
-  while (j % 4 != 0) {
-    dst[j++] = '=';
-  }
-  dst[j++] = '\0';
+  BASE64_ENCODE_BODY;
 }
+
+#undef BASE64_OUT
+#undef BASE64_FLUSH
+
+#define BASE64_OUT(ch)      \
+  do {                      \
+    fprintf(f, "%c", (ch)); \
+    j++;                    \
+  } while (0)
+
+#define BASE64_FLUSH()
+
+void cs_fprint_base64(FILE *f, const unsigned char *src, int src_len) {
+  BASE64_ENCODE_BODY;
+}
+
+#undef BASE64_OUT
+#undef BASE64_FLUSH
 
 /* Convert one byte of encoded base64 input stream to 6-bit chunk */
 static unsigned char from_b64(unsigned char ch) {
@@ -4371,7 +4602,7 @@ static uint32_t blk0(union char64long16 *block, int i) {
   z += (w ^ x ^ y) + blk(i) + 0xCA62C1D6 + rol(v, 5); \
   w = rol(w, 30);
 
-void SHA1Transform(uint32_t state[5], const unsigned char buffer[64]) {
+void cs_sha1_transform(uint32_t state[5], const unsigned char buffer[64]) {
   uint32_t a, b, c, d, e;
   union char64long16 block[1];
 
@@ -4477,7 +4708,7 @@ void SHA1Transform(uint32_t state[5], const unsigned char buffer[64]) {
   (void) e;
 }
 
-void SHA1Init(SHA1_CTX *context) {
+void cs_sha1_init(cs_sha1_ctx *context) {
   context->state[0] = 0x67452301;
   context->state[1] = 0xEFCDAB89;
   context->state[2] = 0x98BADCFE;
@@ -4486,7 +4717,7 @@ void SHA1Init(SHA1_CTX *context) {
   context->count[0] = context->count[1] = 0;
 }
 
-void SHA1Update(SHA1_CTX *context, const unsigned char *data, uint32_t len) {
+void cs_sha1_update(cs_sha1_ctx *context, const unsigned char *data, uint32_t len) {
   uint32_t i, j;
 
   j = context->count[0];
@@ -4495,9 +4726,9 @@ void SHA1Update(SHA1_CTX *context, const unsigned char *data, uint32_t len) {
   j = (j >> 3) & 63;
   if ((j + len) > 63) {
     memcpy(&context->buffer[j], data, (i = 64 - j));
-    SHA1Transform(context->state, context->buffer);
+    cs_sha1_transform(context->state, context->buffer);
     for (; i + 63 < len; i += 64) {
-      SHA1Transform(context->state, &data[i]);
+      cs_sha1_transform(context->state, &data[i]);
     }
     j = 0;
   } else
@@ -4505,7 +4736,7 @@ void SHA1Update(SHA1_CTX *context, const unsigned char *data, uint32_t len) {
   memcpy(&context->buffer[j], &data[i], len - i);
 }
 
-void SHA1Final(unsigned char digest[20], SHA1_CTX *context) {
+void cs_sha1_final(unsigned char digest[20], cs_sha1_ctx *context) {
   unsigned i;
   unsigned char finalcount[8], c;
 
@@ -4515,12 +4746,12 @@ void SHA1Final(unsigned char digest[20], SHA1_CTX *context) {
                                      255);
   }
   c = 0200;
-  SHA1Update(context, &c, 1);
+  cs_sha1_update(context, &c, 1);
   while ((context->count[0] & 504) != 448) {
     c = 0000;
-    SHA1Update(context, &c, 1);
+    cs_sha1_update(context, &c, 1);
   }
-  SHA1Update(context, finalcount, 8);
+  cs_sha1_update(context, finalcount, 8);
   for (i = 0; i < 20; i++) {
     digest[i] =
         (unsigned char) ((context->state[i >> 2] >> ((3 - (i & 3)) * 8)) & 255);
@@ -4529,16 +4760,16 @@ void SHA1Final(unsigned char digest[20], SHA1_CTX *context) {
   memset(&finalcount, '\0', sizeof(finalcount));
 }
 
-void hmac_sha1(const unsigned char *key, size_t keylen,
-               const unsigned char *data, size_t datalen,
-               unsigned char out[20]) {
-  SHA1_CTX ctx;
+void cs_hmac_sha1(const unsigned char *key, size_t keylen,
+                  const unsigned char *data, size_t datalen,
+                  unsigned char out[20]) {
+  cs_sha1_ctx ctx;
   unsigned char buf1[64], buf2[64], tmp_key[20], i;
 
   if (keylen > sizeof(buf1)) {
-    SHA1Init(&ctx);
-    SHA1Update(&ctx, key, keylen);
-    SHA1Final(tmp_key, &ctx);
+    cs_sha1_init(&ctx);
+    cs_sha1_update(&ctx, key, keylen);
+    cs_sha1_final(tmp_key, &ctx);
     key = tmp_key;
     keylen = sizeof(tmp_key);
   }
@@ -4553,15 +4784,15 @@ void hmac_sha1(const unsigned char *key, size_t keylen,
     buf2[i] ^= 0x5c;
   }
 
-  SHA1Init(&ctx);
-  SHA1Update(&ctx, buf1, sizeof(buf1));
-  SHA1Update(&ctx, data, datalen);
-  SHA1Final(out, &ctx);
+  cs_sha1_init(&ctx);
+  cs_sha1_update(&ctx, buf1, sizeof(buf1));
+  cs_sha1_update(&ctx, data, datalen);
+  cs_sha1_final(out, &ctx);
 
-  SHA1Init(&ctx);
-  SHA1Update(&ctx, buf2, sizeof(buf2));
-  SHA1Update(&ctx, out, 20);
-  SHA1Final(out, &ctx);
+  cs_sha1_init(&ctx);
+  cs_sha1_update(&ctx, buf2, sizeof(buf2));
+  cs_sha1_update(&ctx, out, 20);
+  cs_sha1_final(out, &ctx);
 }
 
 #endif /* EXCLUDE_COMMON */
@@ -4578,6 +4809,17 @@ void hmac_sha1(const unsigned char *key, size_t keylen,
 
 /* Amalgamated: #include "osdep.h" */
 /* Amalgamated: #include "str_util.h" */
+
+#if !(_XOPEN_SOURCE >= 700 || _POSIX_C_SOURCE >= 200809L) &&    \
+        !(__DARWIN_C_LEVEL >= 200809L) && !defined(RTOS_SDK) || \
+    defined(_WIN32)
+int strnlen(const char *s, size_t maxlen) {
+  size_t l = 0;
+  for (; l < maxlen && s[l] != '\0'; l++) {
+  }
+  return l;
+}
+#endif
 
 #define C_SNPRINTF_APPEND_CHAR(ch)       \
   do {                                   \
@@ -4660,6 +4902,11 @@ int c_vsnprintf(char *buf, size_t buf_size, const char *fmt, va_list ap) {
         field_width *= 10;
         field_width += *fmt++ - '0';
       }
+      /* Dynamic field width */
+      if (*fmt == '*') {
+        field_width = va_arg(ap, int);
+        fmt++;
+      }
 
       /* Precision */
       if (*fmt == '.') {
@@ -4701,6 +4948,11 @@ int c_vsnprintf(char *buf, size_t buf_size, const char *fmt, va_list ap) {
       if (ch == 's') {
         const char *s = va_arg(ap, const char *); /* Always fetch parameter */
         int j;
+        int pad = field_width - (precision >= 0 ? strnlen(s, precision) : 0);
+        for (j = 0; j < pad; j++) {
+          C_SNPRINTF_APPEND_CHAR(' ');
+        }
+
         /* Ignore negative and 0 precisions */
         for (j = 0; (precision <= 0 || j < precision) && s[j] != '\0'; j++) {
           C_SNPRINTF_APPEND_CHAR(s[j]);
@@ -4799,12 +5051,12 @@ void to_wchar(const char *path, wchar_t *wbuf, size_t wbuf_len) {
  * for systems which do not natively support it (e.g. Windows).
  */
 
-#ifndef NS_FREE
-#define NS_FREE free
+#ifndef MG_FREE
+#define MG_FREE free
 #endif
 
-#ifndef NS_MALLOC
-#define NS_MALLOC malloc
+#ifndef MG_MALLOC
+#define MG_MALLOC malloc
 #endif
 
 #ifdef _WIN32
@@ -4815,7 +5067,7 @@ DIR *opendir(const char *name) {
 
   if (name == NULL) {
     SetLastError(ERROR_BAD_ARGUMENTS);
-  } else if ((dir = (DIR *) NS_MALLOC(sizeof(*dir))) == NULL) {
+  } else if ((dir = (DIR *) MG_MALLOC(sizeof(*dir))) == NULL) {
     SetLastError(ERROR_NOT_ENOUGH_MEMORY);
   } else {
     to_wchar(name, wpath, ARRAY_SIZE(wpath));
@@ -4825,7 +5077,7 @@ DIR *opendir(const char *name) {
       dir->handle = FindFirstFileW(wpath, &dir->info);
       dir->result.d_name[0] = '\0';
     } else {
-      NS_FREE(dir);
+      MG_FREE(dir);
       dir = NULL;
     }
   }
@@ -4839,7 +5091,7 @@ int closedir(DIR *dir) {
   if (dir != NULL) {
     if (dir->handle != INVALID_HANDLE_VALUE)
       result = FindClose(dir->handle) ? 0 : -1;
-    NS_FREE(dir);
+    MG_FREE(dir);
   } else {
     result = -1;
     SetLastError(ERROR_BAD_ARGUMENTS);
@@ -4876,6 +5128,197 @@ struct dirent *readdir(DIR *dir) {
 
 #endif /* EXCLUDE_COMMON */
 #ifdef V7_MODULE_LINES
+#line 1 "./src/../../common/ubjson.c"
+/**/
+#endif
+#ifdef CS_ENABLE_UBJSON
+
+/* Amalgamated: #include "ubjson.h" */
+
+void cs_ubjson_emit_null(struct mbuf *buf) {
+  mbuf_append(buf, "Z", 1);
+}
+
+void cs_ubjson_emit_boolean(struct mbuf *buf, int v) {
+  mbuf_append(buf, v ? "T" : "F", 1);
+}
+
+void cs_ubjson_emit_int8(struct mbuf *buf, int8_t v) {
+  mbuf_append(buf, "i", 1);
+  mbuf_append(buf, &v, 1);
+}
+
+void cs_ubjson_emit_uint8(struct mbuf *buf, uint8_t v) {
+  mbuf_append(buf, "U", 1);
+  mbuf_append(buf, &v, 1);
+}
+
+void cs_ubjson_emit_int16(struct mbuf *buf, int16_t v) {
+  uint8_t b[1 + sizeof(uint16_t)];
+  b[0] = 'I';
+  b[1] = ((uint16_t) v) >> 8;
+  b[2] = ((uint16_t) v) & 0xff;
+  mbuf_append(buf, b, 1 + sizeof(uint16_t));
+}
+
+static void encode_uint32(uint8_t *b, uint32_t v) {
+  b[0] = (v >> 24) & 0xff;
+  b[1] = (v >> 16) & 0xff;
+  b[2] = (v >> 8) & 0xff;
+  b[3] = v & 0xff;
+}
+
+void cs_ubjson_emit_int32(struct mbuf *buf, int32_t v) {
+  uint8_t b[1 + sizeof(uint32_t)];
+  b[0] = 'l';
+  encode_uint32(&b[1], (uint32_t) v);
+  mbuf_append(buf, b, 1 + sizeof(uint32_t));
+}
+
+static void encode_uint64(uint8_t *b, uint64_t v) {
+  b[0] = (v >> 56) & 0xff;
+  b[1] = (v >> 48) & 0xff;
+  b[2] = (v >> 40) & 0xff;
+  b[3] = (v >> 32) & 0xff;
+  b[4] = (v >> 24) & 0xff;
+  b[5] = (v >> 16) & 0xff;
+  b[6] = (v >> 8) & 0xff;
+  b[7] = v & 0xff;
+}
+
+void cs_ubjson_emit_int64(struct mbuf *buf, int64_t v) {
+  uint8_t b[1 + sizeof(uint64_t)];
+  b[0] = 'L';
+  encode_uint64(&b[1], (uint64_t) v);
+  mbuf_append(buf, b, 1 + sizeof(uint64_t));
+}
+
+void cs_ubjson_emit_autoint(struct mbuf *buf, int64_t v) {
+  if (v >= INT8_MIN && v <= INT8_MAX) {
+    cs_ubjson_emit_int8(buf, (int8_t) v);
+  } else if (v >= 0 && v <= 255) {
+    cs_ubjson_emit_uint8(buf, (uint8_t) v);
+  } else if (v >= INT16_MIN && v <= INT16_MAX) {
+    cs_ubjson_emit_int16(buf, (int32_t) v);
+  } else if (v >= INT32_MIN && v <= INT32_MAX) {
+    cs_ubjson_emit_int32(buf, (int32_t) v);
+  } else if (v >= INT64_MIN && v <= INT64_MAX) {
+    cs_ubjson_emit_int64(buf, (int64_t) v);
+  } else {
+    /* TODO(mkm): use "high-precision" stringified type */
+    abort();
+  }
+}
+
+void cs_ubjson_emit_float32(struct mbuf *buf, float v) {
+  uint32_t n;
+  uint8_t b[1 + sizeof(uint32_t)];
+  b[0] = 'd';
+  memcpy(&n, &v, sizeof(v));
+  encode_uint32(&b[1], n);
+  mbuf_append(buf, b, 1 + sizeof(uint32_t));
+}
+
+void cs_ubjson_emit_float64(struct mbuf *buf, double v) {
+  uint64_t n;
+  uint8_t b[1 + sizeof(uint64_t)];
+  b[0] = 'D';
+  memcpy(&n, &v, sizeof(v));
+  encode_uint64(&b[1], n);
+  mbuf_append(buf, b, 1 + sizeof(uint64_t));
+}
+
+void cs_ubjson_emit_autonumber(struct mbuf *buf, double v) {
+  int64_t i = (int64_t) v;
+  if ((double) i == v) {
+    cs_ubjson_emit_autoint(buf, i);
+  } else {
+    cs_ubjson_emit_float64(buf, v);
+  }
+}
+
+void cs_ubjson_emit_size(struct mbuf *buf, size_t v) {
+  /* TODO(mkm): use "high-precision" stringified type */
+  assert((uint64_t) v < INT64_MAX);
+  cs_ubjson_emit_autoint(buf, (int64_t) v);
+}
+
+void cs_ubjson_emit_string(struct mbuf *buf, const char *s, size_t len) {
+  mbuf_append(buf, "S", 1);
+  cs_ubjson_emit_size(buf, len);
+  mbuf_append(buf, s, len);
+}
+
+void cs_ubjson_emit_bin_header(struct mbuf *buf, size_t len) {
+  mbuf_append(buf, "[$U#", 4);
+  cs_ubjson_emit_size(buf, len);
+}
+
+void cs_ubjson_emit_bin(struct mbuf *buf, const char *s, size_t len) {
+  cs_ubjson_emit_bin_header(buf, len);
+  mbuf_append(buf, s, len);
+}
+
+void cs_ubjson_open_object(struct mbuf *buf) {
+  mbuf_append(buf, "{", 1);
+}
+
+void cs_ubjson_emit_object_key(struct mbuf *buf, const char *s, size_t len) {
+  cs_ubjson_emit_size(buf, len);
+  mbuf_append(buf, s, len);
+}
+
+void cs_ubjson_close_object(struct mbuf *buf) {
+  mbuf_append(buf, "}", 1);
+}
+
+void cs_ubjson_open_array(struct mbuf *buf) {
+  mbuf_append(buf, "[", 1);
+}
+
+void cs_ubjson_close_array(struct mbuf *buf) {
+  mbuf_append(buf, "]", 1);
+}
+
+#else
+void cs_ubjson_dummy();
+#endif
+#ifdef V7_MODULE_LINES
+#line 1 "./src/../../common/cs_file.c"
+/**/
+#endif
+/*
+ * Copyright (c) 2015 Cesanta Software Limited
+ * All rights reserved
+ */
+
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+char *cs_read_file(const char *path, size_t *size) {
+  FILE *fp;
+  char *data = NULL;
+  if ((fp = fopen(path, "rb")) == NULL) {
+  } else if (fseek(fp, 0, SEEK_END) != 0) {
+    fclose(fp);
+  } else {
+    *size = ftell(fp);
+    data = (char *) malloc(*size + 1);
+    if (data != NULL) {
+      fseek(fp, 0, SEEK_SET);  /* Some platforms might not have rewind(), Oo */
+      if (fread(data, 1, *size, fp) != *size) {
+        free(data);
+        return NULL;
+      }
+      data[*size] = '\0';
+    }
+    fclose(fp);
+  }
+  return data;
+}
+#ifdef V7_MODULE_LINES
 #line 1 "./src/../builtin/file.c"
 /**/
 #endif
@@ -4887,7 +5330,7 @@ struct dirent *readdir(DIR *dir) {
 /* Amalgamated: #include "v7.h" */
 /* Amalgamated: #include "osdep.h" */
 /* Amalgamated: #include "mbuf.h" */
-
+/* Amalgamated: #include "cs_file.h" */
 /* Amalgamated: #include "v7_features.h" */
 
 #if defined(V7_ENABLE_FILE) && !defined(V7_NO_FS)
@@ -4958,7 +5401,7 @@ static v7_val_t File_eval(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
   if (v7_is_string(arg0)) {
     size_t n;
     const char *s = v7_to_string(v7, &arg0, &n);
-    if (v7_exec_file(v7, &res, s) != V7_OK) {
+    if (v7_exec_file(v7, s, &res) != V7_OK) {
       v7_throw_value(v7, res);
     }
   }
@@ -5074,6 +5517,19 @@ static v7_val_t File_rename(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
   return v7_create_number(res == 0 ? 0 : errno);
 }
 
+static v7_val_t File_loadJSON(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
+  v7_val_t arg0 = v7_array_get(v7, args, 0), result = v7_create_undefined();
+  (void) this_obj;
+  if (v7_is_string(arg0)) {
+    size_t file_name_size;
+    const char *file_name = v7_to_string(v7, &arg0, &file_name_size);
+    if (v7_parse_json_file(v7, file_name, &result) != V7_OK) {
+      result = v7_create_undefined();
+    }
+  }
+  return result;
+}
+
 static v7_val_t File_remove(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
   v7_val_t arg0 = v7_array_get(v7, args, 0);
   int res = -1;
@@ -5122,7 +5578,7 @@ static v7_val_t File_list(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
 
 void init_file(struct v7 *v7) {
   v7_val_t file_obj = v7_create_object(v7);
-  v7_set(v7, v7_get_global_object(v7), "File", 4, 0, file_obj);
+  v7_set(v7, v7_get_global(v7), "File", 4, 0, file_obj);
   s_file_proto = v7_create_object(v7);
   v7_set(v7, file_obj, "prototype", 9, 0, s_file_proto);
 
@@ -5130,6 +5586,7 @@ void init_file(struct v7 *v7) {
   v7_set_method(v7, file_obj, "remove", File_remove);
   v7_set_method(v7, file_obj, "rename", File_rename);
   v7_set_method(v7, file_obj, "open", File_open);
+  v7_set_method(v7, file_obj, "loadJSON", File_loadJSON);
 #if V7_ENABLE__File__list
   v7_set_method(v7, file_obj, "list", File_list);
 #endif
@@ -5343,7 +5800,7 @@ static v7_val_t Socket_send(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
 void init_socket(struct v7 *v7) {
   v7_val_t socket_obj = v7_create_object(v7);
 
-  v7_set(v7, v7_get_global_object(v7), "Socket", 6, 0, socket_obj);
+  v7_set(v7, v7_get_global(v7), "Socket", 6, 0, socket_obj);
   s_sock_proto = v7_create_object(v7);
   v7_set(v7, socket_obj, "prototype", 9, 0, s_sock_proto);
 
@@ -5430,10 +5887,10 @@ static void v7_md5(const char *data, size_t len, char buf[16]) {
 }
 
 static void v7_sha1(const char *data, size_t len, char buf[20]) {
-  SHA1_CTX ctx;
-  SHA1Init(&ctx);
-  SHA1Update(&ctx, (unsigned char *) data, len);
-  SHA1Final((unsigned char *) buf, &ctx);
+  cs_sha1_ctx ctx;
+  cs_sha1_init(&ctx);
+  cs_sha1_update(&ctx, (unsigned char *) data, len);
+  cs_sha1_final((unsigned char *) buf, &ctx);
 }
 
 static void bin2str(char *to, const unsigned char *p, size_t len) {
@@ -5509,7 +5966,7 @@ static v7_val_t Crypto_sha1_hex(struct v7 *v7, v7_val_t this_obj,
 void init_crypto(struct v7 *v7) {
 #ifdef V7_ENABLE_CRYPTO
   v7_val_t obj = v7_create_object(v7);
-  v7_set(v7, v7_get_global_object(v7), "Crypto", 6, 0, obj);
+  v7_set(v7, v7_get_global(v7), "Crypto", 6, 0, obj);
   v7_set_method(v7, obj, "md5", Crypto_md5);
   v7_set_method(v7, obj, "md5_hex", Crypto_md5_hex);
   v7_set_method(v7, obj, "sha1", Crypto_sha1);
@@ -5520,6 +5977,285 @@ void init_crypto(struct v7 *v7) {
   (void) v7;
 #endif
 }
+#ifdef V7_MODULE_LINES
+#line 1 "./src/../builtin/v7_ubjson.c"
+/**/
+#endif
+/* Amalgamated: #include "v7_ubjson.h" */
+
+#ifdef V7_ENABLE_UBJSON
+
+#include <v7.h>
+#include <string.h>
+#include <assert.h>
+
+#include <ubjson.h>
+
+/* Amalgamated: #include "internal.h" */
+
+struct ubjson_ctx {
+  struct mbuf out;   /* output buffer */
+  struct mbuf stack; /* visit stack */
+  v7_val_t cb;       /* called to render data  */
+  v7_val_t errb;     /* called to finish; successo or rerror */
+  v7_val_t bin;      /* current Bin object */
+  size_t bytes_left; /* bytes left in current Bin generator */
+};
+
+struct visit {
+  v7_val_t obj;
+  union {
+    size_t next_idx;
+    struct v7_property *p;
+  } v;
+};
+
+static void _ubjson_call_cb(struct v7 *v7, struct ubjson_ctx *ctx) {
+  v7_val_t res, cb, args = v7_create_array(v7);
+  v7_own(v7, &args);
+
+  if (ctx->out.buf == NULL) {
+    /* signal end of stream */
+    v7_array_push(v7, args, v7_create_undefined());
+    cb = ctx->errb;
+  } else if (ctx->out.len > 0) {
+    v7_array_push(v7, args,
+                  v7_create_string(v7, ctx->out.buf, ctx->out.len, 1));
+    ctx->out.len = 0;
+    cb = ctx->cb;
+  } else {
+    /* avoid calling cb with no output */
+    goto cleanup;
+  }
+
+  if (v7_apply(v7, &res, cb, v7_create_undefined(), args) != V7_OK) {
+    fprintf(stderr, "Got error while calling ubjson cb: ");
+    v7_fprintln(stderr, v7, res);
+  }
+
+cleanup:
+  v7_disown(v7, &args);
+}
+
+struct visit *push_visit(struct mbuf *stack, v7_val_t obj) {
+  struct visit *res;
+  size_t pos = stack->len;
+  mbuf_append(stack, NULL, sizeof(struct visit));
+  res = (struct visit *) (stack->buf + pos);
+  memset(res, 0, sizeof(struct visit));
+  res->obj = obj;
+  return res;
+}
+
+struct visit *cur_visit(struct mbuf *stack) {
+  if (stack->len == 0) return NULL;
+  return (struct visit *) (stack->buf + stack->len - sizeof(struct visit));
+}
+
+void pop_visit(struct mbuf *stack) {
+  stack->len -= sizeof(struct visit);
+}
+
+static struct ubjson_ctx *ubjson_ctx_new(struct v7 *v7, val_t cb, val_t errb) {
+  struct ubjson_ctx *ctx = (struct ubjson_ctx *) malloc(sizeof(*ctx));
+  mbuf_init(&ctx->out, 0);
+  mbuf_init(&ctx->stack, 0);
+  ctx->cb = cb;
+  ctx->errb = errb;
+  ctx->bin = v7_create_undefined();
+  v7_own(v7, &ctx->cb);
+  v7_own(v7, &ctx->errb);
+  v7_own(v7, &ctx->bin);
+  return ctx;
+}
+
+static void ubjson_ctx_free(struct v7 *v7, struct ubjson_ctx *ctx) {
+  /*
+   * Clear out reference to this context in case there is some lingering
+   * callback.
+   */
+  if (!v7_is_undefined(ctx->bin)) {
+    v7_set(v7, ctx->bin, "ctx", ~0, 0, v7_create_undefined());
+  }
+  v7_disown(v7, &ctx->bin);
+  v7_disown(v7, &ctx->errb);
+  v7_disown(v7, &ctx->cb);
+  mbuf_free(&ctx->out);
+  mbuf_free(&ctx->stack);
+  free(ctx);
+}
+
+/* This will be called many time to advance rendering of an ubjson ctx */
+static void _ubjson_render_cont(struct v7 *v7, struct ubjson_ctx *ctx) {
+  struct mbuf *buf = &ctx->out, *stack = &ctx->stack;
+  struct visit *cur;
+  v7_val_t gen_proto = v7_get(
+      v7, v7_get(v7, v7_get(v7, v7_get_global(v7), "UBJSON", ~0), "Bin", ~0),
+      "prototype", ~0);
+
+  if (ctx->out.len > 0) {
+    _ubjson_call_cb(v7, ctx);
+  }
+
+  for (cur = cur_visit(stack); cur != NULL; cur = cur_visit(stack)) {
+    v7_val_t obj = cur->obj;
+
+    if (v7_is_undefined(obj)) {
+      cs_ubjson_emit_null(buf);
+    } else if (v7_is_null(obj)) {
+      cs_ubjson_emit_null(buf);
+    } else if (v7_is_boolean(obj)) {
+      cs_ubjson_emit_boolean(buf, v7_to_boolean(obj));
+    } else if (v7_is_number(obj)) {
+      cs_ubjson_emit_autonumber(buf, v7_to_number(obj));
+    } else if (v7_is_string(obj)) {
+      size_t n;
+      const char *s = v7_to_string(v7, &obj, &n);
+      cs_ubjson_emit_string(buf, s, n);
+    } else if (v7_is_array(v7, obj)) {
+      unsigned long cur_idx = cur->v.next_idx;
+
+      if (cur->v.next_idx == 0) {
+        cs_ubjson_open_array(buf);
+      }
+
+      cur->v.next_idx++;
+
+      if (cur->v.next_idx > v7_array_length(v7, cur->obj)) {
+        cs_ubjson_close_array(buf);
+      } else {
+        cur = push_visit(stack, v7_array_get(v7, obj, cur_idx));
+        /* skip default popping of visitor frame */
+        continue;
+      }
+    } else if (v7_is_object(obj)) {
+      size_t n;
+      v7_val_t name;
+      const char *s;
+
+      if (v_get_prototype(v7, obj) == gen_proto) {
+        ctx->bytes_left = v7_to_number(v7_get(v7, obj, "size", ~0));
+        cs_ubjson_emit_bin_header(buf, ctx->bytes_left);
+        ctx->bin = obj;
+        v7_set(v7, obj, "ctx", ~0, 0, v7_create_foreign(ctx));
+        pop_visit(stack);
+        v7_apply(v7, NULL, v7_get(v7, obj, "user", ~0), obj,
+                 v7_create_undefined());
+        /*
+         * The user generator will reenter calling this function again with the
+         * same context.
+         */
+        return;
+      }
+
+      if (cur->v.p == NULL) {
+        cs_ubjson_open_object(buf);
+      }
+
+      cur->v.p = v7_next_prop(v7, obj, cur->v.p);
+
+      if (cur->v.p == NULL) {
+        cs_ubjson_close_object(buf);
+      } else {
+        name = v7_iter_get_name(v7, cur->v.p);
+        s = v7_to_string(v7, &name, &n);
+        cs_ubjson_emit_object_key(buf, s, n);
+
+        cur = push_visit(stack, v7_get_v(v7, obj, name));
+        /* skip default popping of visitor frame */
+        continue;
+      }
+    } else {
+      fprintf(stderr, "ubsjon: unsupported object: ");
+      v7_fprintln(stderr, v7, obj);
+    }
+
+    pop_visit(stack);
+  }
+
+  if (ctx->out.len > 0) {
+    _ubjson_call_cb(v7, ctx);
+  }
+  mbuf_free(&ctx->out);
+  _ubjson_call_cb(v7, ctx);
+  ubjson_ctx_free(v7, ctx);
+}
+
+static void _ubjson_render(struct v7 *v7, struct ubjson_ctx *ctx,
+                           v7_val_t root) {
+  push_visit(&ctx->stack, root);
+  _ubjson_render_cont(v7, ctx);
+}
+
+static v7_val_t UBJSON_render(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
+  v7_val_t obj = v7_array_get(v7, args, 0), cb = v7_array_get(v7, args, 1),
+           errb = v7_array_get(v7, args, 2);
+  (void) this_obj;
+
+  struct ubjson_ctx *ctx = ubjson_ctx_new(v7, cb, errb);
+  _ubjson_render(v7, ctx, obj);
+  return v7_create_undefined();
+}
+
+static v7_val_t Bin_send(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
+  struct ubjson_ctx *ctx;
+  size_t n;
+  v7_val_t arg;
+  const char *s;
+  (void) v7;
+  (void) this_obj;
+  (void) args;
+
+  arg = v7_array_get(v7, args, 0);
+  ctx = (struct ubjson_ctx *) v7_to_foreign(v7_get(v7, this_obj, "ctx", ~0));
+  if (ctx == NULL) {
+    v7_throw(v7, "UBJSON context closed\n");
+  }
+  s = v7_to_string(v7, &arg, &n);
+  if (n > ctx->bytes_left) {
+    n = ctx->bytes_left;
+  } else {
+    ctx->bytes_left -= n;
+  }
+  /*
+   * TODO(mkm):
+   * this is useless buffering, we should call ubjson cb directly
+   */
+  mbuf_append(&ctx->out, s, n);
+  _ubjson_call_cb(v7, ctx);
+
+  if (ctx->bytes_left == 0) {
+    _ubjson_render_cont(v7, ctx);
+  }
+
+  return v7_create_undefined();
+}
+
+static v7_val_t UBJSON_Bin(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
+  (void) v7;
+  (void) this_obj;
+  (void) args;
+  v7_set(v7, this_obj, "size", ~0, 0, v7_array_get(v7, args, 0));
+  v7_set(v7, this_obj, "user", ~0, 0, v7_array_get(v7, args, 1));
+  return v7_create_undefined();
+}
+
+void init_ubjson(struct v7 *v7) {
+  v7_val_t gen_proto, ubjson;
+  ubjson = v7_create_object(v7);
+  v7_set(v7, v7_get_global(v7), "UBJSON", 6, 0, ubjson);
+  v7_set_method(v7, ubjson, "render", UBJSON_render);
+  gen_proto = v7_create_object(v7);
+  v7_set(v7, ubjson, "Bin", ~0, 0,
+         v7_create_constructor(v7, gen_proto, UBJSON_Bin, 0));
+  v7_set_method(v7, gen_proto, "send", Bin_send);
+}
+
+#else
+void init_ubjson(struct v7 *v7) {
+  (void) v7;
+}
+#endif
 #ifdef V7_MODULE_LINES
 #line 1 "./src/varint.c"
 /**/
@@ -6740,9 +7476,10 @@ enum v7_err v7_compile(const char *code, int binary, FILE *fp) {
   enum v7_err err;
 
   ast_init(&ast, 0);
-  err = parse(v7, &ast, code, 1);
+  err = parse(v7, &ast, code, 1, 0);
   if (err == V7_OK) {
     if (binary) {
+      fwrite(BIN_AST_SIGNATURE, sizeof(BIN_AST_SIGNATURE), 1, fp);
       fwrite(ast.mbuf.buf, ast.mbuf.len, 1, fp);
     } else {
       ast_dump_tree(fp, &ast, &pos, 0);
@@ -7038,8 +7775,10 @@ v7_val_t v7_create_array(struct v7 *v7) {
  */
 V7_PRIVATE val_t v7_create_dense_array(struct v7 *v7) {
   val_t a = v7_create_array(v7);
+  v7_own(v7, &a);
   v7_set_property(v7, a, "", 0, V7_PROPERTY_HIDDEN, V7_NULL);
   v7_to_object(a)->attributes |= V7_OBJ_DENSE_ARRAY;
+  v7_disown(v7, &a);
   return a;
 }
 
@@ -7055,6 +7794,7 @@ v7_val_t v7_create_regexp(struct v7 *v7, const char *re, size_t re_len,
     return V7_UNDEFINED;
   } else {
     val_t obj = create_object(v7, v7->regexp_prototype);
+    v7_own(v7, &obj);
     rp = (struct v7_regexp *) malloc(sizeof(*rp));
     rp->regexp_string = v7_create_string(v7, re, re_len, 1);
     rp->compiled_regexp = p;
@@ -7062,6 +7802,7 @@ v7_val_t v7_create_regexp(struct v7 *v7, const char *re, size_t re_len,
 
     v7_set_property(v7, obj, "", 0, V7_PROPERTY_HIDDEN,
                     v7_pointer_to_value(rp) | V7_TAG_REGEXP);
+    v7_disown(v7, &obj);
     return obj;
   }
 }
@@ -7122,6 +7863,16 @@ static int v_sprintf_s(char *buf, size_t size, const char *fmt, ...) {
 int double_to_str(char *buf, size_t buf_size, double val, int prec);
 #endif
 
+static const char *hex_digits = "0123456789abcdef";
+static char *append_hex(char *buf, char *limit, uint8_t c) {
+  if (buf < limit) *buf++ = 'u';
+  if (buf < limit) *buf++ = '0';
+  if (buf < limit) *buf++ = '0';
+  if (buf < limit) *buf++ = hex_digits[(int) ((c >> 4) % 0xf)];
+  if (buf < limit) *buf++ = hex_digits[(int) (c & 0xf)];
+  return buf;
+}
+
 /*
  * Appends quoted s to buf. Any double quote contained in s will be escaped.
  * Returns the number of characters that would have been added,
@@ -7131,24 +7882,35 @@ int double_to_str(char *buf, size_t buf_size, double val, int prec);
 static int snquote(char *buf, size_t size, const char *s, size_t len) {
   char *limit = buf + size - 1;
   const char *end;
+  /*
+   * String single character escape sequence:
+   * http://www.ecma-international.org/ecma-262/6.0/index.html#table-34
+   *
+   * 0x8 -> \b
+   * 0x9 -> \t
+   * 0xa -> \n
+   * 0xb -> \v
+   * 0xc -> \f
+   * 0xd -> \r
+   */
+  const char *specials = "btnvfr";
   size_t i = 0;
 
   i++;
   if (buf < limit) *buf++ = '"';
 
   for (end = s + len; s < end; s++) {
-    if (*s == '"') {
+    if (*s == '"' || *s == '\\') {
       i++;
       if (buf < limit) *buf++ = '\\';
-    } else if (*s == '\n') {
-      i++;
+    } else if (*s >= '\b' && *s <= '\r') {
+      i += 2;
       if (buf < limit) *buf++ = '\\';
-      if (buf < limit) *buf++ = 'n';
+      if (buf < limit) *buf++ = specials[*s - '\b'];
       continue;
-    } else if (*s == '\t') {
-      i++;
+    } else if ((*s >= '\0' && *s < '\b') || (*s > '\r' && *s < ' ')) {
       if (buf < limit) *buf++ = '\\';
-      if (buf < limit) *buf++ = 't';
+      buf = append_hex(buf, limit, (uint8_t) *s);
       continue;
     }
     i++;
@@ -7373,7 +8135,6 @@ V7_PRIVATE int to_str(struct v7 *v7, val_t v, char *buf, size_t size,
     case V7_TYPE_FOREIGN:
       return c_snprintf(buf, size, "[foreign_%p]", v7_to_foreign(v));
     default:
-      printf("NOT IMPLEMENTED YET %d\n", val_type(v7, v)); /* LCOV_EXCL_LINE */
       abort();
   }
   return 0; /* for compilers that don't know about abort() */
@@ -8223,6 +8984,14 @@ V7_PRIVATE int is_prototype_of(struct v7 *v7, val_t o, val_t p) {
   return 0;
 }
 
+int v7_is_instanceof(struct v7 *v7, val_t o, const char *c) {
+  return v7_is_instanceof_v(v7, o, v7_get(v7, v7->global_object, c, ~0));
+}
+
+int v7_is_instanceof_v(struct v7 *v7, val_t o, val_t c) {
+  return is_prototype_of(v7, o, v7_get(v7, c, "prototype", 9));
+}
+
 int v7_is_true(struct v7 *v7, val_t v) {
   size_t len;
   return ((v7_is_boolean(v) && v7_to_boolean(v)) ||
@@ -8349,6 +9118,7 @@ struct v7 *v7_create_opt(struct v7_create_opts opts) {
     init_file(v7);
     init_crypto(v7);
     init_socket(v7);
+    init_ubjson(v7);
 
     v7->inhibit_gc = 0;
   }
@@ -8356,20 +9126,20 @@ struct v7 *v7_create_opt(struct v7_create_opts opts) {
   return v7;
 }
 
-val_t v7_get_global_object(struct v7 *v7) {
+val_t v7_get_global(struct v7 *v7) {
   return v7->global_object;
 }
 
 void v7_destroy(struct v7 *v7) {
   if (v7 != NULL) {
+    gc_arena_destroy(v7, &v7->object_arena);
+    gc_arena_destroy(v7, &v7->function_arena);
+    gc_arena_destroy(v7, &v7->property_arena);
+
     mbuf_free(&v7->owned_strings);
     mbuf_free(&v7->foreign_strings);
     mbuf_free(&v7->json_visited_stack);
     mbuf_free(&v7->tmp_stack);
-
-    gc_arena_destroy(v7, &v7->object_arena);
-    gc_arena_destroy(v7, &v7->function_arena);
-    gc_arena_destroy(v7, &v7->property_arena);
 
 #ifdef V7_ENABLE_GC_CHECK
     /* delete this v7 */
@@ -8417,6 +9187,10 @@ int v7_disown(struct v7 *v7, v7_val_t *v) {
   }
 
   return 0;
+}
+
+v7_val_t v7_get_this(struct v7 *v7) {
+  return v7->this_object;
 }
 #ifdef V7_MODULE_LINES
 #line 1 "./src/gc.c"
@@ -8488,6 +9262,22 @@ V7_PRIVATE void gc_arena_init(struct gc_arena *a, size_t cell_size,
 
 V7_PRIVATE void gc_arena_destroy(struct v7 *v7, struct gc_arena *a) {
   struct gc_block *b;
+  struct gc_cell *c, *next;
+
+  /*
+   * We need to sweep through all live objects and invoke their destructors.
+   * However gc_sweep assumes the arena is full (i.e. the free list is empty)
+   * and contains either live objects or garbage.
+   * This assumption is important since there is no cheap way to tell whether
+   * a cell is used or free, and we can call the destructor only on used cells.
+   * Since gc_arena_destroy can by called at any stage, even when the arena is
+   * half full, we need to consume the free list in order to reuse gc_sweep fast
+   * path and avoid code duplication for invoking the destructors.
+   */
+  for (c = a->free; c != NULL; c = next) {
+    next = c->head.link;
+    memset(c, 0, a->cell_size);
+  }
 
   if (a->blocks != NULL) {
     if (a->destructor != NULL) {
@@ -8530,6 +9320,12 @@ V7_PRIVATE void *gc_alloc_cell(struct v7 *v7, struct gc_arena *a) {
 #ifdef V7_DISABLE_GC
   (void) v7;
   return calloc(1, a->cell_size);
+#elif V7_MALLOC_GC
+  struct gc_cell *r;
+  v7_gc(v7, 0);
+  r = calloc(1, a->cell_size);
+  mbuf_append(&v7->malloc_trace, &r, sizeof(r));
+  return r;
 #else
   struct gc_cell *r;
   if (a->free == NULL) {
@@ -8573,6 +9369,29 @@ V7_PRIVATE void *gc_alloc_cell(struct v7 *v7, struct gc_arena *a) {
   return (void *) r;
 #endif
 }
+
+#ifdef V7_MALLOC_GC
+/*
+ * Scans trough the memory blocks registered in the malloc trace.
+ * Free the unmarked ones and reset the mark on the rest.
+ */
+void gc_sweep_malloc(struct v7 *v7) {
+  struct gc_cell **cur;
+  for (cur = (struct gc_cell **) v7->malloc_trace.buf;
+       cur < (struct gc_cell **) (v7->malloc_trace.buf + v7->malloc_trace.len);
+       cur++) {
+    if (*cur == NULL) continue;
+
+    if (MARKED(*cur)) {
+      UNMARK(*cur);
+    } else {
+      free(*cur);
+      /* TODO(mkm): compact malloc trace buffer */
+      *cur = NULL;
+    }
+  }
+}
+#endif
 
 /*
  * Scans the arena and add all unmarked cells to the free list.
@@ -8883,28 +9702,14 @@ void gc_compact_strings(struct v7 *v7) {
 
 void gc_dump_owned_strings(struct v7 *v7) {
   size_t i;
-#if 0
-  for (i = 0; i < v7->owned_strings.len; i++) {
-    printf("%02x ", (uint8_t) v7->owned_strings.buf[i]);
-  }
-  printf("\n");
-  for (i = 0; i < v7->owned_strings.len; i++) {
-    if (isprint(v7->owned_strings.buf[i])) {
-      printf(" %c ", v7->owned_strings.buf[i]);
-    } else {
-      printf(" . ");
-    }
-  }
-#else
   for (i = 0; i < v7->owned_strings.len; i++) {
     if (isprint((unsigned char) v7->owned_strings.buf[i])) {
-      printf("%c", v7->owned_strings.buf[i]);
+      fputc(v7->owned_strings.buf[i], stderr);
     } else {
-      printf(".");
+      fputc('.', stderr);
     }
   }
-#endif
-  printf("\n");
+  fputc('\n', stderr);
 }
 
 #endif
@@ -8984,9 +9789,13 @@ void v7_gc(struct v7 *v7, int full) {
   gc_compact_strings(v7);
 #endif
 
+#ifdef V7_MALLOC_GC
+  gc_sweep_malloc(v7);
+#else
   gc_sweep(v7, &v7->object_arena, 0);
   gc_sweep(v7, &v7->function_arena, 0);
   gc_sweep(v7, &v7->property_arena, 0);
+#endif
 
   gc_dump_arena_stats("After GC objects", &v7->object_arena);
   gc_dump_arena_stats("After GC functions", &v7->function_arena);
@@ -9945,7 +10754,7 @@ static enum v7_err parse_script(struct v7 *v7, struct ast *a) {
   ast_off_t outer_last_var_node = v7->last_var_node;
   int saved_in_strict = v7->pstate.in_strict;
   v7->last_var_node = start;
-  ast_modify_skip(a, start, 1, AST_FUNC_FIRST_VAR_SKIP);
+  ast_modify_skip(a, start, start, AST_FUNC_FIRST_VAR_SKIP);
   if (parse_use_strict(v7, a) == V7_OK) {
     v7->pstate.in_strict = 1;
   }
@@ -9964,9 +10773,17 @@ static unsigned long get_column(const char *code, const char *pos) {
   return p == code ? pos - p : pos - (p + 1);
 }
 
+static const char *get_err_name(enum v7_err err) {
+  static const char *err_names[] = {"", "syntax error", "exception",
+                                    "stack overflow", "script too large"};
+  return (err < sizeof(err_names) / sizeof(err_names[0])) ? err_names[err]
+                                                          : "internal error";
+}
+
 V7_PRIVATE enum v7_err parse(struct v7 *v7, struct ast *a, const char *src,
-                             int verbose) {
+                             int verbose, int is_json) {
   enum v7_err err;
+  const char *p;
   v7->pstate.source_code = v7->pstate.pc = src;
   v7->pstate.file_name = "<stdin>";
   v7->pstate.line_no = 1;
@@ -9975,7 +10792,26 @@ V7_PRIVATE enum v7_err parse(struct v7 *v7, struct ast *a, const char *src,
   v7->pstate.in_switch = 0;
 
   next_tok(v7);
-  err = parse_script(v7, a);
+  /*
+   * setup initial state for "after newline" tracking.
+   * next_tok will consume our token and position the current line
+   * position at the beginning of the next token.
+   * While processing the first token, both the leading and the
+   * trailing newlines will be counted and thus it will create a spurious
+   * "after newline" condition at the end of the first token
+   * regardless if there is actually a newline after it.
+   */
+  for (p = src; isspace((int) *p); p++) {
+    if (*p == '\n') {
+      v7->pstate.prev_line_no++;
+    }
+  }
+
+  if (is_json) {
+    err = parse_terminal(v7, a);
+  } else {
+    err = parse_script(v7, a);
+  }
   if (a->has_overflow) {
     c_snprintf(v7->error_msg, sizeof(v7->error_msg),
                "script too large (try V7_LARGE_AST build option)");
@@ -9988,9 +10824,22 @@ V7_PRIVATE enum v7_err parse(struct v7 *v7, struct ast *a, const char *src,
   }
   if (verbose && err != V7_OK) {
     unsigned long col = get_column(v7->pstate.source_code, v7->tok);
+    int line_len = 0;
+    for (p = v7->tok - col; *p != '\0' && *p != '\n'; p++) {
+      line_len++;
+    }
+
+    /* fixup line number: line_no points to the beginning of the next token */
+    for (; p < v7->pstate.pc; p++) {
+      if (*p == '\n') {
+        v7->pstate.line_no--;
+      }
+    }
+
     c_snprintf(v7->error_msg, sizeof(v7->error_msg),
-               "parse error at at line %d col %lu: [%.*s]", v7->pstate.line_no,
-               col, (int) (col + v7->tok_len), v7->tok - col);
+               "%s at line %d col %lu:\n%.*s\n%*s^", get_err_name(err),
+               v7->pstate.line_no, col, line_len, v7->tok - col, (int) col - 1,
+               "");
   }
   return err;
 }
@@ -10010,6 +10859,8 @@ const char *v7_get_parser_error(struct v7 *v7) {
 /* Amalgamated: #include "internal.h" */
 /* Amalgamated: #include "gc.h" */
 /* Amalgamated: #include "osdep.h" */
+/* Amalgamated: #include "cs_file.h" */
+/* Amalgamated: #include "ast.h" */
 
 #undef siglongjmp
 #undef sigsetjmp
@@ -10047,10 +10898,14 @@ static val_t create_exception(struct v7 *v7, enum error_ctor ex,
     return V7_UNDEFINED;
   }
   args = v7_create_dense_array(v7);
+  v7_own(v7, &args);
   v7_array_set(v7, args, 0, v7_create_string(v7, msg, strlen(msg), 1));
   v7->creating_exception++;
   e = create_object(v7, v7_get(v7, v7->error_objects[ex], "prototype", 9));
+  v7_own(v7, &e);
   i_apply(v7, v7->error_objects[ex], e, args);
+  v7_disown(v7, &e);
+  v7_disown(v7, &args);
   v7->creating_exception--;
   return e;
 }
@@ -11012,12 +11867,12 @@ V7_PRIVATE val_t i_prepare_call(struct v7 *v7, struct v7_function *func,
   ast_skip_tree(func->ast, pos);
 
   frame = v7_create_object(v7);
+  tmp_stack_push(&tf, &frame);
   v7_to_object(frame)->prototype = func->scope;
 #if V7_ENABLE__StackTrace
   v7_set(v7, frame, "____p", 5, V7_PROPERTY_HIDDEN, v7->call_stack);
 #endif
 
-  tmp_stack_push(&tf, &frame);
   i_populate_local_vars(v7, func->ast, fstart, fvar, frame);
   tmp_frame_cleanup(&tf);
   return frame;
@@ -11052,6 +11907,18 @@ V7_PRIVATE val_t i_invoke_function(struct v7 *v7, struct v7_function *func,
   return res;
 }
 
+static val_t i_call_cfunction(struct v7 *v7, val_t f, val_t this_object,
+                              val_t args) {
+  int saved_inhibit_gc = v7->inhibit_gc;
+  val_t res, old_this = v7->this_object;
+  v7->inhibit_gc = 1;
+  v7->this_object = this_object;
+  res = v7_to_cfunction(f)(v7, this_object, args);
+  v7->this_object = old_this;
+  v7->inhibit_gc = saved_inhibit_gc;
+  return res;
+}
+
 static val_t i_eval_call(struct v7 *v7, struct ast *a, ast_off_t *pos,
                          val_t scope, val_t this_object, int is_constructor) {
   ast_off_t end, fpos, fend, fbody;
@@ -11075,7 +11942,31 @@ static val_t i_eval_call(struct v7 *v7, struct ast *a, ast_off_t *pos,
 
   end = ast_get_skip(a, *pos, AST_END_SKIP);
   ast_move_to_children(a, pos);
-  cfunc = v1 = i_eval_expr(v7, a, pos, scope);
+  if (v7_is_undefined(this_object) || is_constructor) {
+    cfunc = v1 = i_eval_expr(v7, a, pos, scope);
+  } else {
+    ast_off_t pp = *pos;
+    enum ast_tag tag = ast_fetch_tag(a, &pp);
+    assert(tag == AST_MEMBER || tag == AST_INDEX);
+    switch (tag) {
+      case AST_MEMBER:
+        name = ast_get_inlined_data(a, pp, &name_len);
+        cfunc = v1 = v7_get(v7, this_object, name, name_len);
+        break;
+      case AST_INDEX: {
+        val_t idx;
+        ast_move_to_children(a, &pp);
+        ast_skip_tree(a, &pp);
+        idx = i_eval_expr(v7, a, &pp, scope);
+        cfunc = v1 = v7_get_v(v7, this_object, idx);
+        break;
+      }
+      default:
+        /* impossible */
+        break;
+    }
+    ast_skip_tree(a, pos);
+  }
   if (!v7_is_cfunction(v1) && !v7_is_function(v1)) {
     /* extract the hidden property from a cfunction_object */
     struct v7_property *p;
@@ -11110,7 +12001,7 @@ static val_t i_eval_call(struct v7 *v7, struct ast *a, ast_off_t *pos,
       res = i_eval_expr(v7, a, pos, scope);
       v7_array_set(v7, args, i, res);
     }
-    res = v7_to_cfunction(cfunc)(v7, this_object, args);
+    res = i_call_cfunction(v7, cfunc, this_object, args);
     goto cleanup;
   }
   if (!v7_is_function(v1)) {
@@ -11605,7 +12496,7 @@ cleanup:
   return res;
 }
 
-enum v7_err v7_apply(struct v7 *v7, v7_val_t *result, v7_val_t func,
+enum v7_err v7_apply(struct v7 *v7, v7_val_t *volatile result, v7_val_t func,
                      v7_val_t this_obj, v7_val_t args) {
   enum v7_err err = V7_OK;
   jmp_buf saved_jmp_buf;
@@ -11661,7 +12552,7 @@ i_apply(struct v7 *v7, val_t f, val_t this_object, val_t args) {
   }
 
   if (v7_is_cfunction(f)) {
-    res = v7_to_cfunction(f)(v7, this_object, args);
+    res = i_call_cfunction(v7, f, this_object, args);
     goto cleanup;
   }
   if (!v7_is_function(f)) {
@@ -11708,8 +12599,8 @@ cleanup:
 
 /* like v7_exec_with but frees src if fr is true */
 
-V7_PRIVATE enum v7_err v7_exec_with2(struct v7 *v7, val_t *res, const char *src,
-                                     val_t w, int fr) {
+V7_PRIVATE enum v7_err i_exec(struct v7 *v7, const char *src, int src_len,
+                              val_t *res, val_t w, int is_json, int fr) {
   /* TODO(mkm): use GC pool */
   struct ast *a = (struct ast *) malloc(sizeof(struct ast));
   val_t old_this = v7->this_object, saved_call_stack = v7->call_stack;
@@ -11717,7 +12608,7 @@ V7_PRIVATE enum v7_err v7_exec_with2(struct v7 *v7, val_t *res, const char *src,
   ast_off_t pos = 0;
   jmp_buf saved_jmp_buf, saved_label_buf;
   size_t saved_tmp_stack_pos = v7->tmp_stack.len;
-  enum v7_err err = V7_OK;
+  volatile enum v7_err err = V7_OK;
   val_t r = v7_create_undefined();
 
   /* Make v7_exec() reentrant: save exception environments */
@@ -11737,7 +12628,18 @@ V7_PRIVATE enum v7_err v7_exec_with2(struct v7 *v7, val_t *res, const char *src,
     err = V7_EXEC_EXCEPTION;
     goto cleanup;
   }
-  err = parse(v7, a, src, 1);
+  if (strncmp(BIN_AST_SIGNATURE, src, sizeof(BIN_AST_SIGNATURE)) != 0) {
+    err = parse(v7, a, src, 1, is_json);
+  } else {
+    /* TODO(alashkin): try to remove memory doubling */
+    if (src_len == 0) {
+      err = V7_INVALID_ARG;
+    } else {
+      mbuf_append(&a->mbuf, src + sizeof(BIN_AST_SIGNATURE),
+                  src_len - sizeof(BIN_AST_SIGNATURE));
+    }
+  }
+
   if (fr) {
     free((void *) src);
   }
@@ -11775,64 +12677,52 @@ cleanup:
   return err;
 }
 
-enum v7_err v7_exec_with(struct v7 *v7, val_t *res, const char *src, val_t w) {
-  return v7_exec_with2(v7, res, src, w, 0);
-}
-
 void v7_interrupt(struct v7 *v7) {
   v7->interrupt = 1;
 }
 
-enum v7_err v7_exec(struct v7 *v7, val_t *res, const char *src) {
-  return v7_exec_with(v7, res, src, V7_UNDEFINED);
+/*
+ * TODO(alashkin): we need src_len only in case of
+ * binary AST-file, i.e. for i_file & Co
+ * To keep v7_exec_xxxx signatures unchanged
+ * providing 0 as src_len.
+ * That is a dirty workaround.
+ */
+enum v7_err v7_exec_with(struct v7 *v7, const char *src, val_t t, val_t *res) {
+  return i_exec(v7, src, 0, res, t, 0, 0);
 }
 
-#ifndef NO_LIBC
-/* Note: this function move file pointer to the end of file */
-int v7_get_file_size(FILE *fp) {
-  int res = -1;
-  if (fseek(fp, 0, SEEK_END) == 0) {
-    res = ftell(fp);
-  }
-
-  return res;
+enum v7_err v7_exec(struct v7 *v7, const char *src, val_t *res) {
+  return i_exec(v7, src, 0, res, v7_create_undefined(), 0, 0);
 }
-#endif
+
+enum v7_err v7_parse_json(struct v7 *v7, const char *str, val_t *result) {
+  return i_exec(v7, str, 0, result, v7_create_undefined(), 1, 0);
+}
 
 #ifndef V7_NO_FS
-enum v7_err v7_exec_file(struct v7 *v7, val_t *res, const char *path) {
-  FILE *fp;
+enum v7_err i_file(struct v7 *v7, const char *path, val_t *res, int is_json) {
   char *p;
-  long file_size;
+  size_t file_size;
   enum v7_err err = V7_EXEC_EXCEPTION;
   *res = v7_create_undefined();
 
-  if ((fp = fopen(path, "r")) == NULL) {
-    snprintf(v7->error_msg, sizeof(v7->error_msg), "cannot open file [%s]",
-             path);
+  if ((p = cs_read_file(path, &file_size)) == NULL) {
+    snprintf(v7->error_msg, sizeof(v7->error_msg), "cannot open [%s]", path);
     *res = create_exception(v7, SYNTAX_ERROR, v7->error_msg);
-  } else if ((file_size = v7_get_file_size(fp)) <= 0) {
-    snprintf(v7->error_msg, sizeof(v7->error_msg), "fseek(%s): %s", path,
-             strerror(errno));
-    *res = create_exception(v7, SYNTAX_ERROR, v7->error_msg);
-    fclose(fp);
-  } else if ((p = (char *) calloc(1, (size_t) file_size + 1)) == NULL) {
-    snprintf(v7->error_msg, sizeof(v7->error_msg), "cannot allocate %ld bytes",
-             file_size + 1);
-    fclose(fp);
   } else {
-    rewind(fp);
-    if ((fread(p, 1, (size_t) file_size, fp) < (size_t) file_size) &&
-        ferror(fp)) {
-      fclose(fp);
-      return err;
-    }
-    fclose(fp);
-    /* v7_exec_with2 will free sources after parse */
-    err = v7_exec_with2(v7, res, p, V7_UNDEFINED, 1);
+    err = i_exec(v7, p, file_size, res, v7_create_undefined(), is_json, 1);
   }
 
   return err;
+}
+
+enum v7_err v7_exec_file(struct v7 *v7, const char *path, val_t *res) {
+  return i_file(v7, path, res, 0);
+}
+
+enum v7_err v7_parse_json_file(struct v7 *v7, const char *path, v7_val_t *res) {
+  return i_file(v7, path, res, 1);
 }
 #endif
 #ifdef V7_MODULE_LINES
@@ -12020,7 +12910,7 @@ V7_PRIVATE void eval_bcode(struct v7 *v7, struct bcode *bcode) {
         if (prop != NULL) {
           prop->value = v3;
         } else {
-          v7_set_v(v7, v7_get_global_object(v7), v2, v3);
+          v7_set_v(v7, v7_get_global(v7), v2, v3);
         }
         PUSH(v3);
         break;
@@ -12060,26 +12950,26 @@ V7_PRIVATE v7_val_t Std_print(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
 }
 
 V7_PRIVATE v7_val_t
-_std_eval(struct v7 *v7, v7_val_t args, char before, char after) {
+std_eval(struct v7 *v7, v7_val_t arg, v7_val_t this_obj, int is_json) {
   enum v7_err err;
-  v7_val_t res = v7_create_undefined(), arg = v7_array_get(v7, args, 0);
+  v7_val_t res = v7_create_undefined();
 
   if (arg != V7_UNDEFINED) {
-    char buf[100 + 3], *p = buf;
-    int len = to_str(v7, arg, buf + 1, sizeof(buf) - 3, 0);
+    char buf[100], *p = buf;
+    int len = to_str(v7, arg, buf, sizeof(buf), 0);
 
-    /* fit null terminating byte */
-    if (len >= (int) 100) {
+    /* Fit null terminating byte and quotes */
+    if (len >= (int) sizeof(buf) - 2) {
       /* Buffer is not large enough. Allocate a bigger one */
       p = (char *) malloc(len + 3);
-      to_str(v7, arg, p + 1, len + 1, 0);
+      to_str(v7, arg, p, len + 2, 0);
     }
 
-    p[0] = before;
-    p[len + 1] = after;
-    p[len + 2] = '\0';
-
-    err = v7_exec(v7, &res, p);
+    if (is_json) {
+      err = v7_parse_json(v7, p, &res);
+    } else {
+      err = v7_exec_with(v7, p, this_obj, &res);
+    }
 
     if (p != buf) free(p);
     if (err != V7_OK) v7_throw_value(v7, res);
@@ -12088,8 +12978,8 @@ _std_eval(struct v7 *v7, v7_val_t args, char before, char after) {
 }
 
 V7_PRIVATE v7_val_t Std_eval(struct v7 *v7, v7_val_t t, v7_val_t args) {
-  (void) t;
-  return _std_eval(v7, args, ' ', ' ');
+  v7_val_t arg = v7_array_get(v7, args, 0);
+  return std_eval(v7, arg, t, 0);
 }
 
 V7_PRIVATE v7_val_t Std_parseInt(struct v7 *v7, v7_val_t t, v7_val_t args) {
@@ -12321,9 +13211,35 @@ static const char js_function_call[] = STRINGIFY(
     }}););
 #endif
 
+#if V7_ENABLE__Function__bind
+static const char js_function_bind[] = STRINGIFY(
+    Object.defineProperty(Function.prototype, "bind", {
+      writable:true,
+      configurable: true,
+      value: function(t) {
+        var f = this;
+        return function() {
+          return f.apply(t, arguments);
+        };
+    }}););
+#endif
+
+#if V7_ENABLE__Blob
+static const char js_Blob[] = STRINGIFY(
+    function Blob(a) {
+      this.a = a;
+    });
+#endif
+
 static const char * const js_functions[] = {
+#if V7_ENABLE__Blob
+  js_Blob,
+#endif
 #if V7_ENABLE__Function__call
   js_function_call,
+#endif
+#if V7_ENABLE__Function__bind
+  js_function_bind,
 #endif
 #if V7_ENABLE__Array__reduce
   js_array_reduce,
@@ -12341,7 +13257,10 @@ static const char * const js_functions[] = {
   int i;
 
   for(i = 0; i < (int) ARRAY_SIZE(js_functions); i++) {
-    v7_exec(v7, &res, js_functions[i]);
+    if (v7_exec(v7, js_functions[i], &res) != V7_OK) {
+      fprintf(stderr, "ex: %s:\n", js_functions[i]);
+      v7_fprintln(stderr, v7, res);
+    }
   }
 
   /* TODO(lsm): re-enable in a separate PR */
@@ -12415,16 +13334,18 @@ int nextesc(const char **p) {
     case 'c':
       ++*p;
       return *s & 31;
-    case 'f':
-      return '\f';
-    case 'n':
-      return '\n';
-    case 'r':
-      return '\r';
+    case 'b':
+      return '\b';
     case 't':
       return '\t';
+    case 'n':
+      return '\n';
     case 'v':
       return '\v';
+    case 'f':
+      return '\f';
+    case 'r':
+      return '\r';
     case '\\':
       return '\\';
     case 'u':
@@ -12617,6 +13538,13 @@ static int re_nextc(Rune *r, const char **src, const char *src_end) {
     }
     return 1;
   }
+  return 0;
+}
+
+static int re_nextc_raw(Rune *r, const char **src, const char *src_end) {
+  *r = 0;
+  if (*src >= src_end) return 0;
+  *src += chartorune(r, *src);
   return 0;
 }
 
@@ -13776,7 +14704,7 @@ int slre_replace(struct slre_loot *loot, const char *src, size_t src_len,
   const char *const rstr_end = rstr + rstr_len;
 
   memset(dstsub, 0, sizeof(*dstsub));
-  while (rstr < rstr_end && !(n = re_nextc(&curr_rune, &rstr, rstr_end)) &&
+  while (rstr < rstr_end && !(n = re_nextc_raw(&curr_rune, &rstr, rstr_end)) &&
          curr_rune) {
     int sz;
     if (n < 0) return n;
@@ -14325,7 +15253,7 @@ static const char js_function_Object[] =
 V7_PRIVATE void init_object(struct v7 *v7) {
   val_t object, v;
   /* TODO(mkm): initialize global object without requiring a parser */
-  v7_exec(v7, &v, js_function_Object);
+  v7_exec(v7, js_function_Object, &v);
 
   object = v7_get(v7, v7->global_object, "Object", 6);
   v7_set(v7, object, "prototype", 9, 0, v7->object_prototype);
@@ -14386,6 +15314,19 @@ V7_PRIVATE void init_object(struct v7 *v7) {
  */
 
 /* Amalgamated: #include "internal.h" */
+
+void v7_print_error(FILE *f, struct v7 *v7, const char *ctx, val_t e) {
+  /* TODO(mkm): figure out if this is an error object and which kind */
+  v7_val_t msg = v7_get(v7, e, "message", ~0);
+  if (v7_is_undefined(msg)) {
+    msg = e;
+  }
+  fprintf(f, "Exec error [%s]: ", ctx);
+  v7_fprintln(f, v7, msg);
+#if V7_ENABLE__StackTrace
+  v7_fprint_stack_trace(f, v7, e);
+#endif
+}
 
 static val_t Error_ctor(struct v7 *v7, val_t this_obj, val_t args) {
   val_t arg0 = v7_array_get(v7, args, 0);
@@ -14486,8 +15427,44 @@ static val_t Number_valueOf(struct v7 *v7, val_t this_obj, val_t args) {
   return Obj_valueOf(v7, this_obj, args);
 }
 
+/*
+ * Converts a 64 bit signed integer into a string of a given base.
+ * Requires space for 65 bytes (64 bit + null terminator) in the result buffer
+ */
+static char *cs_itoa(int64_t value, char *result, int base) {
+  char *ptr = result, *ptr1 = result, tmp_char;
+  int64_t tmp_value;
+  int64_t sign = value < 0 ? -1 : 1;
+  const char *base36 = "0123456789abcdefghijklmnopqrstuvwxyz";
+
+  if (base < 2 || base > 36) {
+    *result = '\0';
+    return result;
+  }
+
+  /* let's think positive */
+  value = value * sign;
+  do {
+    tmp_value = value;
+    value /= base;
+    *ptr++ = base36[tmp_value - value * base];
+  } while (value);
+
+  /* sign */
+  if (sign < 0) *ptr++ = '-';
+  *ptr-- = '\0';
+  while (ptr1 < ptr) {
+    tmp_char = *ptr;
+    *ptr-- = *ptr1;
+    *ptr1++ = tmp_char;
+  }
+  return result;
+}
+
 static val_t Number_toString(struct v7 *v7, val_t this_obj, val_t args) {
-  char buf[50];
+  val_t num, radixv = v7_array_get(v7, args, 0);
+  char buf[65];
+  double d, radix;
   (void) args;
 
   if (this_obj == v7->number_prototype) {
@@ -14501,8 +15478,14 @@ static val_t Number_toString(struct v7 *v7, val_t this_obj, val_t args) {
                     "Number.toString called on non-number object");
   }
 
-  /* TODO(mkm) handle radix first arg */
-  v7_stringify_value(v7, i_value_of(v7, this_obj), buf, sizeof(buf));
+  num = i_value_of(v7, this_obj);
+  d = v7_to_number(num);
+  radix = v7_to_number(radixv);
+  if (v7_is_number(radixv) && !isnan(d) && (int64_t) d == d && radix != 10) {
+    cs_itoa(v7_to_number(num), buf, radix);
+  } else {
+    v7_stringify_value(v7, num, buf, sizeof(buf));
+  }
   return v7_create_string(v7, buf, strlen(buf), 1);
 }
 
@@ -14563,8 +15546,8 @@ static val_t Json_stringify(struct v7 *v7, val_t this_obj, val_t args) {
 }
 
 V7_PRIVATE v7_val_t Json_parse(struct v7 *v7, v7_val_t t, v7_val_t args) {
-  (void) t;
-  return _std_eval(v7, args, '(', ')');
+  v7_val_t arg = v7_array_get(v7, args, 0);
+  return std_eval(v7, arg, t, 1);
 }
 
 V7_PRIVATE void init_json(struct v7 *v7) {
@@ -14678,10 +15661,13 @@ static int a_cmp(void *user_data, const void *pa, const void *pb) {
   val_t a = *(val_t *) pa, b = *(val_t *) pb, func = sort_data->sort_func;
 
   if (v7_is_function(func)) {
+    int saved_inhibit_gc = v7->inhibit_gc;
     val_t res, args = v7_create_dense_array(v7);
     v7_array_push(v7, args, a);
     v7_array_push(v7, args, b);
+    v7->inhibit_gc = 0;
     res = i_apply(v7, func, V7_UNDEFINED, args);
+    v7->inhibit_gc = saved_inhibit_gc;
     return (int) -v7_to_number(res);
   } else {
     char sa[100], sb[100];
@@ -14917,11 +15903,16 @@ static void a_prep1(struct v7 *v7, val_t t, val_t args, val_t *a0, val_t *a1) {
 }
 
 static val_t a_prep2(struct v7 *v7, val_t a, val_t v, val_t n, val_t t) {
-  val_t params = v7_create_dense_array(v7);
+  int saved_inhibit_gc = v7->inhibit_gc;
+  val_t res, params = v7_create_dense_array(v7);
   v7_array_push(v7, params, v);
   v7_array_push(v7, params, n);
   v7_array_push(v7, params, t);
-  return i_apply(v7, a, t, params);
+
+  v7->inhibit_gc = 0;
+  res = i_apply(v7, a, t, params);
+  v7->inhibit_gc = saved_inhibit_gc;
+  return res;
 }
 
 static val_t Array_forEach(struct v7 *v7, val_t this_obj, val_t args) {
@@ -15586,7 +16577,8 @@ static val_t Str_toString(struct v7 *v7, val_t this_obj, val_t args) {
 
 #if V7_ENABLE__RegExp
 static val_t Str_match(struct v7 *v7, val_t this_obj, val_t args) {
-  val_t so, ro, arr = v7_create_null();
+  val_t so = v7_create_undefined(), ro = v7_create_undefined(),
+        arr = v7_create_null();
   long previousLastIndex = 0;
   int lastMatch = 1, n = 0, flag_g;
   struct v7_regexp *rxp;
@@ -15608,7 +16600,6 @@ static val_t Str_match(struct v7 *v7, val_t this_obj, val_t args) {
 
   rxp->lastIndex = 0;
   arr = v7_create_dense_array(v7);
-  v7_own(v7, &arr);
   while (lastMatch) {
     val_t result = rx_exec(v7, ro, so, 1);
     if (v7_is_null(result))
@@ -15624,7 +16615,6 @@ static val_t Str_match(struct v7 *v7, val_t this_obj, val_t args) {
       n++;
     }
   }
-  v7_disown(v7, &arr);
   if (n == 0) return v7_create_null();
   return arr;
 }
@@ -15704,7 +16694,7 @@ static val_t Str_replace(struct v7 *v7, val_t this_obj, val_t args) {
       }
       p = (char *) loot.caps[0].end;
     } while (flag_g && p < str_end);
-    if (p < str_end) {
+    if (p <= str_end) {
       ptok->start = p;
       ptok->end = str_end;
       ptok++;
@@ -17159,7 +18149,7 @@ static val_t Function_ctor(struct v7 *v7, val_t this_obj, val_t args) {
   }
   mbuf_append(&m, "})\0", 3);
 
-  ret = v7_exec(v7, &tmp, m.buf);
+  ret = v7_exec(v7, m.buf, &tmp);
   mbuf_free(&m);
   if (ret != V7_OK) {
     throw_exception(v7, SYNTAX_ERROR, "Invalid function body");
@@ -17392,6 +18382,7 @@ V7_PRIVATE void init_regex(struct v7 *v7) {
 
 /* Amalgamated: #include "internal.h" */
 /* Amalgamated: #include "osdep.h" */
+/* Amalgamated: #include "cs_file.h" */
 
 #if defined(_MSC_VER) && _MSC_VER >= 1800
 #define fileno _fileno
@@ -17418,33 +18409,6 @@ static void show_usage(char *argv[]) {
   fprintf(stderr, "%s\n", "  -vf <n>    function arena size");
   fprintf(stderr, "%s\n", "  -vp <n>    property arena size");
   exit(EXIT_FAILURE);
-}
-
-static char *read_file(const char *path, size_t *size) {
-  FILE *fp;
-  struct stat st;
-  char *data = NULL;
-  if ((fp = fopen(path, "rb")) != NULL && !fstat(fileno(fp), &st)) {
-    *size = st.st_size;
-    data = (char *) malloc(*size + 1);
-    if (data != NULL) {
-      if (fread(data, 1, *size, fp) != *size) {
-        free(data);
-        return NULL;
-      }
-      data[*size] = '\0';
-    }
-    fclose(fp);
-  }
-  return data;
-}
-
-static void print_error(struct v7 *v7, const char *f, val_t e) {
-  fprintf(stderr, "Exec error [%s]: ", f);
-  v7_fprintln(stderr, v7, e);
-#if V7_ENABLE__StackTrace
-  v7_fprint_stack_trace(stderr, v7, e);
-#endif
 }
 
 #if V7_ENABLE__Memory__stats
@@ -17544,8 +18508,8 @@ int v7_main(int argc, char *argv[], void (*init_func)(struct v7 *),
       if (v7_compile(exprs[j], binary_ast, stdout) != V7_OK) {
         fprintf(stderr, "%s\n", "parse error");
       }
-    } else if (v7_exec(v7, &res, exprs[j]) != V7_OK) {
-      print_error(v7, exprs[j], res);
+    } else if (v7_exec(v7, exprs[j], &res) != V7_OK) {
+      v7_print_error(stderr, v7, exprs[j], res);
       res = v7_create_undefined();
     }
   }
@@ -17555,14 +18519,17 @@ int v7_main(int argc, char *argv[], void (*init_func)(struct v7 *),
     if (show_ast) {
       size_t size;
       char *source_code;
-      if ((source_code = read_file(argv[i], &size)) == NULL) {
+      if ((source_code = cs_read_file(argv[i], &size)) == NULL) {
         fprintf(stderr, "Cannot read [%s]\n", argv[i]);
       } else {
-        v7_compile(source_code, binary_ast, stdout);
+        if (v7_compile(source_code, binary_ast, stdout) != V7_OK) {
+          fprintf(stderr, "error: %s\n", v7->error_msg);
+          exit(1);
+        }
         free(source_code);
       }
-    } else if (v7_exec_file(v7, &res, argv[i]) != V7_OK) {
-      print_error(v7, argv[i], res);
+    } else if (v7_exec_file(v7, argv[i], &res) != V7_OK) {
+      v7_print_error(stderr, v7, argv[i], res);
       res = v7_create_undefined();
     }
   }

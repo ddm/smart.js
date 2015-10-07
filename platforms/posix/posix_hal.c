@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <time.h>
+#include <sj_timers.h>
 #include <sj_v7_ext.h>
 #ifdef __APPLE__
 #include <sys/time.h>
@@ -19,13 +20,14 @@ typedef unsigned short u_short;
 #endif
 
 #ifdef _WIN32
+#include <windows.h>
 #else
 #include <unistd.h>
 #endif
 
-#include <fossa.h>
+#include <mongoose.h>
 #include <sj_prompt.h>
-#include <sj_fossa.h>
+#include <sj_mongoose.h>
 
 #ifdef __APPLE__
 v7_val_t *bsd_timer_cb = NULL;
@@ -74,7 +76,8 @@ void sj_wdt_feed() {
 }
 
 void sj_system_restart() {
-  /* TODO(alashkin): Do we really want to restart OS here? */
+  /* An external supervisor can restart us */
+  exit(0);
 }
 
 size_t sj_get_fs_memory_usage() {
@@ -83,9 +86,14 @@ size_t sj_get_fs_memory_usage() {
 }
 
 void sj_usleep(int usecs) {
+#ifndef _WIN32
   usleep(usecs);
+#else
+  Sleep(usecs / 1000);
+#endif
 }
 
+#ifndef _WIN32
 void posix_timer_callback(int sig, siginfo_t *si, void *uc) {
 #ifdef __APPLE__
   sj_invoke_cb0(v7, *bsd_timer_cb);
@@ -93,11 +101,23 @@ void posix_timer_callback(int sig, siginfo_t *si, void *uc) {
   sj_invoke_cb0(v7, *((v7_val_t *) si->si_value.sival_ptr));
 #endif
 }
+#else
+struct timer_callback_params {
+  v7_val_t *cb;
+  HANDLE timer;
+};
+
+VOID CALLBACK win32_timer_callback(PVOID param, BOOLEAN timeout) {
+  struct timer_callback_params *p = (struct timer_callback_params *) param;
+  sj_invoke_cb0(v7, *p->cb);
+  DeleteTimerQueueTimer(NULL, p->timer, NULL);
+  free(p);
+}
+#endif
 
 void sj_set_timeout(int msecs, v7_val_t *cb) {
-  struct sigaction sa;
-
 #if defined(SA_SIGINFO) && defined(CLOCK_REALTIME)
+  struct sigaction sa;
   struct sigevent te;
   struct itimerspec its;
   timer_t timer_id;
@@ -122,6 +142,7 @@ void sj_set_timeout(int msecs, v7_val_t *cb) {
   timer_settime(timer_id, 0, &its, NULL);
 
 #elif defined(__APPLE__)
+  struct sigaction sa;
   struct itimerval tv;
 
   bsd_timer_cb = cb;
@@ -139,27 +160,30 @@ void sj_set_timeout(int msecs, v7_val_t *cb) {
 
   setitimer(ITIMER_REAL, &tv, NULL);
 
-#else
-  /* TODO(lsm): implement this */
-  (void) cb;
+#elif defined(_WIN32)
+  struct timer_callback_params *params = malloc(sizeof(*params));
+  params->cb = cb;
+  CreateTimerQueueTimer(&params->timer, NULL, win32_timer_callback,
+                        (void *) params, msecs, 0,
+                        WT_EXECUTEDEFAULT | WT_EXECUTEONLYONCE);
 #endif
 }
 
 static void *stdin_thread(void *param) {
   int ch, sock = (int) (uintptr_t) param;
   while ((ch = getchar()) != EOF) {
-    unsigned char c = (unsigned char) ch;
+    char c = (char) ch;
     send(sock, &c, 1, 0);  // Forward all types characters to the socketpair
   }
   close(sock);
   return NULL;
 }
 
-static void prompt_handler(struct ns_connection *nc, int ev, void *ev_data) {
+static void prompt_handler(struct mg_connection *nc, int ev, void *ev_data) {
   size_t i;
   struct mbuf *io = &nc->recv_mbuf;
   switch (ev) {
-    case NS_RECV:
+    case MG_EV_RECV:
       for (i = 0; i < io->len; i++) {
         sj_prompt_process_char(io->buf[i]);
         if (io->buf[i] == '\n') {
@@ -168,7 +192,7 @@ static void prompt_handler(struct ns_connection *nc, int ev, void *ev_data) {
       }
       mbuf_remove(io, io->len);
       break;
-    case NS_CLOSE:
+    case MG_EV_CLOSE:
       sj_please_quit = 1;
       break;
   }
@@ -176,12 +200,12 @@ static void prompt_handler(struct ns_connection *nc, int ev, void *ev_data) {
 
 void sj_prompt_init_hal() {
   int fds[2];
-  if (!ns_socketpair(fds, SOCK_STREAM)) {
+  if (!mg_socketpair((sock_t *) fds, SOCK_STREAM)) {
     printf("cannot create a socketpair\n");
     exit(1);
   }
-  ns_start_thread(stdin_thread, (void *) (uintptr_t) fds[1]);
-  ns_add_sock(&sj_mgr, fds[0], prompt_handler);
+  mg_start_thread(stdin_thread, (void *) (uintptr_t) fds[1]);
+  mg_add_sock(&sj_mgr, fds[0], prompt_handler);
 }
 
 void sj_invoke_cb(struct v7 *v7, v7_val_t func, v7_val_t this_obj,

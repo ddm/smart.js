@@ -6,8 +6,8 @@
 #ifndef OSDEP_HEADER_INCLUDED
 #define OSDEP_HEADER_INCLUDED
 
-#if !defined(NS_DISABLE_FILESYSTEM) && defined(AVR_NOFS)
-#define NS_DISABLE_FILESYSTEM
+#if !defined(MG_DISABLE_FILESYSTEM) && defined(AVR_NOFS)
+#define MG_DISABLE_FILESYSTEM
 #endif
 
 #undef UNICODE                /* Use ANSI WinAPI functions */
@@ -91,6 +91,7 @@
 #endif
 
 #ifdef _WIN32
+#define random() rand()
 #ifdef _MSC_VER
 #pragma comment(lib, "ws2_32.lib") /* Linking with winsock library */
 #endif
@@ -118,12 +119,16 @@
 #else
 #define fseeko(x, y, z) fseek((x), (y), (z))
 #endif
+#define random() rand()
 typedef int socklen_t;
+typedef signed char int8_t;
 typedef unsigned char uint8_t;
+typedef int int32_t;
 typedef unsigned int uint32_t;
+typedef short int16_t;
 typedef unsigned short uint16_t;
-typedef unsigned __int64 uint64_t;
 typedef __int64 int64_t;
+typedef unsigned __int64 uint64_t;
 typedef SOCKET sock_t;
 typedef uint32_t in_addr_t;
 #ifndef UINT16_MAX
@@ -138,9 +143,9 @@ typedef uint32_t in_addr_t;
 #define INT64_FMT "I64d"
 #define SIZE_T_FMT "Iu"
 #ifdef __MINGW32__
-typedef struct stat ns_stat_t;
+typedef struct stat cs_stat_t;
 #else
-typedef struct _stati64 ns_stat_t;
+typedef struct _stati64 cs_stat_t;
 #endif
 #ifndef S_ISDIR
 #define S_ISDIR(x) ((x) &_S_IFDIR)
@@ -162,18 +167,20 @@ DIR *opendir(const char *name);
 int closedir(DIR *dir);
 struct dirent *readdir(DIR *dir);
 
-#elif /* not _WIN32 */ defined(NS_CC3200)
+#elif /* not _WIN32 */ defined(MG_CC3200)
 
 #include <fcntl.h>
 #include <unistd.h>
 #include <cc3200_libc.h>
 #include <cc3200_socket.h>
 
-#elif /* not CC3200 */ defined(NS_ESP8266) && defined(RTOS_SDK)
+#elif /* not CC3200 */ defined(MG_ESP8266) && defined(RTOS_SDK)
 
 #include <lwip/sockets.h>
 #include <lwip/netdb.h>
 #include <lwip/dns.h>
+#include <esp_libc.h>
+#define random() os_random()
 /* TODO(alashkin): check if zero is OK */
 #define SOMAXCONN 0
 #include <stdlib.h>
@@ -185,7 +192,7 @@ struct dirent *readdir(DIR *dir);
 #include <netdb.h>
 #include <pthread.h>
 #include <unistd.h>
-#include <arpa/inet.h> /* For inet_pton() when NS_ENABLE_IPV6 is defined */
+#include <arpa/inet.h> /* For inet_pton() when MG_ENABLE_IPV6 is defined */
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/select.h>
@@ -197,7 +204,7 @@ struct dirent *readdir(DIR *dir);
 #include <stdarg.h>
 
 #ifndef AVR_LIBC
-#ifndef NS_ESP8266
+#ifndef MG_ESP8266
 #define closesocket(x) close(x)
 #endif
 #ifndef __cdecl
@@ -206,10 +213,14 @@ struct dirent *readdir(DIR *dir);
 
 #define INVALID_SOCKET (-1)
 #define INT64_FMT PRId64
+#if defined(ESP8266) || defined(MG_ESP8266)
+#define SIZE_T_FMT "u"
+#else
 #define SIZE_T_FMT "zu"
+#endif
 #define to64(x) strtoll(x, NULL, 10)
 typedef int sock_t;
-typedef struct stat ns_stat_t;
+typedef struct stat cs_stat_t;
 #define DIRSEP '/'
 #endif /* !AVR_LIBC */
 
@@ -226,7 +237,7 @@ int64_t strtoll(const char *str, char **endptr, int base);
     fflush(stdout);             \
   } while (0)
 
-#ifdef NS_ENABLE_DEBUG
+#ifdef MG_ENABLE_DEBUG
 #define DBG __DBG
 #else
 #define DBG(x)

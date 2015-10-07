@@ -1,9 +1,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-#include "sj_fossa.h"
-#include "sj_v7_ext.h"
+#include <sj_mongoose.h>
 #include <sj_prompt.h>
+#include <sj_timers.h>
+#include <sj_v7_ext.h>
 #include "smartjs.h"
 
 #ifndef JS_FS_ROOT
@@ -14,7 +15,7 @@ static const char *s_argv0;
 int sj_please_quit;
 
 static void pre_init(struct v7 *v7) {
-  static const char *init_files[] = {"smart.js", "user.js"};
+  static const char *init_files[] = {"smart.js"};
   const char *dir = s_argv0 + strlen(s_argv0) - 1;
   char path[512];
   size_t i;
@@ -36,6 +37,7 @@ static void pre_init(struct v7 *v7) {
     fprintf(stderr, "cannot chdir to %s\n", path);
   }
 
+  sj_init_timers(v7);
   sj_init_v7_ext(v7);
   init_smartjs(v7);
 
@@ -44,7 +46,7 @@ static void pre_init(struct v7 *v7) {
    * That directory should be located where the binary (s_argv0) lives.
    */
   for (i = 0; i < sizeof(init_files) / sizeof(init_files[0]); i++) {
-    if (v7_exec_file(v7, &res, init_files[i]) != V7_OK) {
+    if (v7_exec_file(v7, init_files[i], &res) != V7_OK) {
       fprintf(stderr, "Failed to run %s: ", init_files[i]);
       v7_fprintln(stderr, v7, res);
     }
@@ -56,12 +58,12 @@ static void post_init(struct v7 *v7) {
 
   do {
     /*
-     * Now waiting until fossa has active connections
+     * Now waiting until mongoose has active connections
      * and there are active gpio ISR and then exiting
      * TODO(alashkin): change this to something smart
      */
-  } while ((fossa_poll() || gpio_poll()) && !sj_please_quit);
-  fossa_destroy();
+  } while ((mongoose_poll(100) || gpio_poll()) && !sj_please_quit);
+  mongoose_destroy();
 }
 
 int main(int argc, char *argv[]) {

@@ -82,7 +82,7 @@ static void interrupt_char_processor(char ch) {
 static void process_js(char *cmd) {
   s_sjp.char_processor = interrupt_char_processor;
   v7_val_t v;
-  int res = v7_exec(s_sjp.v7, &v, cmd);
+  int res = v7_exec(s_sjp.v7, cmd, &v);
 
   if (res == V7_SYNTAX_ERROR) {
     printf("Syntax error: %s\n", v7_get_parser_error(s_sjp.v7));
@@ -175,7 +175,7 @@ static void process_prompt_char(char ch) {
       }
       s_sjp.buf[s_sjp.pos] = '\0';
       break;
-    case '\r':
+    case '\n':
 #ifndef SJ_PROMPT_DISABLE_ECHO
       printf("\n");
 #endif
@@ -184,7 +184,7 @@ static void process_prompt_char(char ch) {
       process_command(s_sjp.buf);
       s_sjp.pos = 0;
       break;
-    case '\n':
+    case '\r':
       break;
     default:
 #ifndef SJ_PROMPT_DISABLE_ECHO

@@ -4,8 +4,8 @@
 #include <ets_sys.h>
 #include <v7.h>
 #include <sj_hal.h>
+#include <sj_timers.h>
 #include <sj_v7_ext.h>
-#include <sj_conf.h>
 #include <sj_i2c_js.h>
 #include <sj_spi_js.h>
 #include <sj_gpio_js.h>
@@ -16,6 +16,8 @@
 #include "esp_uart.h"
 #include "esp_sj_wifi.h"
 #include "esp_data_gen.h"
+#include "sj_mongoose_ws_client.h"
+#include <sha1.h>
 
 #ifndef RTOS_SDK
 
@@ -23,14 +25,13 @@
 #include <gpio.h>
 #include <os_type.h>
 #include <user_interface.h>
-#include <sha1.h>
 #include <mem.h>
 #include <espconn.h>
 
 #else
 
 #include <esp_system.h>
-#include <sj_fossa.h>
+#include <sj_mongoose.h>
 
 #endif /* RTOS_SDK */
 
@@ -141,24 +142,6 @@ static v7_val_t crash(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
   return v7_create_undefined();
 }
 
-void esp_init_conf(struct v7 *v7) {
-#ifndef RTOS_TODO
-  int valid;
-  unsigned char sha[20];
-  SHA1_CTX ctx;
-  SHA1Init(&ctx);
-  SHA1Update(&ctx, (unsigned char *) V7_DEV_CONF_STR,
-             strnlen(V7_DEV_CONF_STR, 0x1000 - 20));
-  SHA1Final(sha, &ctx);
-
-  valid = (memcmp(V7_DEV_CONF_SHA1, sha, 20) == 0);
-
-  sj_init_conf(v7, valid ? V7_DEV_CONF_STR : NULL);
-#else
-  sj_init_conf(v7, NULL);
-#endif
-}
-
 void init_v7(void *stack_base) {
   struct v7_create_opts opts;
   v7_val_t dht11, debug;
@@ -169,41 +152,43 @@ void init_v7(void *stack_base) {
   opts.c_stack_base = stack_base;
   v7 = v7_create_opt(opts);
 
-  v7_set_method(v7, v7_get_global_object(v7), "dsleep", dsleep);
-  v7_set_method(v7, v7_get_global_object(v7), "crash", crash);
+  v7_set_method(v7, v7_get_global(v7), "dsleep", dsleep);
+  v7_set_method(v7, v7_get_global(v7), "crash", crash);
 
 #if V7_ESP_ENABLE__DHT11
   dht11 = v7_create_object(v7);
-  v7_set(v7, v7_get_global_object(v7), "DHT11", 5, 0, dht11);
+  v7_set(v7, v7_get_global(v7), "DHT11", 5, 0, dht11);
   v7_set_method(v7, dht11, "read", DHT11_read);
 #else
   (void) dht11;
 #endif /* V7_ESP_ENABLE__DHT11 */
 
   debug = v7_create_object(v7);
-  v7_set(v7, v7_get_global_object(v7), "Debug", 5, 0, debug);
+  v7_set(v7, v7_get_global(v7), "Debug", 5, 0, debug);
   v7_set_method(v7, debug, "mode", Debug_mode);
   v7_set_method(v7, debug, "print", Debug_print);
 
+  sj_init_timers(v7);
   sj_init_v7_ext(v7);
 
   init_gpiojs(v7);
   init_i2cjs(v7);
   init_spijs(v7);
-
   init_wifi(v7);
 
 #ifndef RTOS_TODO
   init_data_gen_server(v7);
 #endif
 
-  esp_init_conf(v7);
-
 #ifdef RTOS_SDK
-  fossa_init();
+  mongoose_init();
 #endif
 
   sj_init_simple_http_client(v7);
+
+#ifdef RTOS_SDK
+  sj_init_ws_client(v7);
+#endif
 
   v7_gc(v7, 1);
 }
@@ -211,7 +196,7 @@ void init_v7(void *stack_base) {
 #ifndef V7_NO_FS
 void init_smartjs() {
   v7_val_t res;
-  if (v7_exec_file(v7, &res, "smart.js") != V7_OK) {
+  if (v7_exec_file(v7, "smart.js", &res) != V7_OK) {
     printf("smart.js execution: ");
     v7_println(v7, res);
   }

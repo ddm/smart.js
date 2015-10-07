@@ -1,5 +1,7 @@
 # Smart.js platform
 
+[![Join the chat at https://gitter.im/cesanta/smart.js](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/cesanta/smart.js?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
+
 Smart.js is a generic, hardware independent, full-stack
 Internet of Things software platform.
 Smart.js solves problems of reliability, scalability, security
@@ -29,15 +31,15 @@ Take a look at 2 minute video that shows Smart.js in action:
    ![](https://docs.cesanta.com/images/smartjs_quick_start_guide/fc3.png)
 7. Configure Wifi:
    enter `Wifi.setup('WifiNetworkName', 'WifiPassword')` to the console.
-   When network is configured, device starts to send random numbers
+8. Enter `demo()` to start sending random numbers
    to `cloud.cesanta.com` every second, simulating real sensor data.
    `cloud.cesanta.com` however will reject that data, because it doesn't
    accept any data from unregistered devices
-8. Register the device on the cloud:
+9. Register the device on the cloud:
    login to [https://cloud.cesanta.com](https://cloud.cesanta.com)
-9. Click on "Add Device" tab, copy/paste device ID and password and press
+10. Click on "Add Device" tab, copy/paste device ID and password and press
    "Add Device" button
-10. Swith to the "Dashboard" tab, and see real-time graph updated:
+11. Swith to the "Dashboard" tab, and see real-time graph updated:
   ![](https://docs.cesanta.com/images/smartjs_quick_start_guide/dash1.png)
 
 # Architecture
@@ -58,7 +60,9 @@ Smart.js firmware on a device side:
 
 # Supported hardware
 
-- Espressif ESP8266 (since ALPHA1)
+- Espressif ESP8266 - since ALPHA1
+- Texas Instruments CC3200 - since ALPHA2
+- POSIX (Raspberry PI, BeagleBone, Linux, Windows, Mac, etc) - since ALPHA2
 - Many more will be added soon!
 
 # JavaScript API reference
@@ -315,7 +319,7 @@ to export C/C++ functions to JavaScript:
 # Contributions
 
 People who have agreed to the
-[Cesanta CLA](https://docs.cesanta.com/contributors_la.html)
+[Cesanta CLA](https://docs.cesanta.com/contributors_la.shtml)
 can make contributions. Note that the CLA isn't a copyright
 _assigment_ but rather a copyright _license_.
 You retain the copyright on your contributions.

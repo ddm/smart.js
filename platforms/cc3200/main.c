@@ -21,8 +21,10 @@
 
 #include "oslib/osi.h"
 
-#include "sj_fossa.h"
+#include "sj_mongoose.h"
+#include "sj_i2c_js.h"
 #include "sj_prompt.h"
+#include "sj_timers.h"
 #include "sj_v7_ext.h"
 #include "sj_wifi.h"
 #include "v7.h"
@@ -32,10 +34,10 @@
 #include "cc3200_sj_hal.h"
 #include "cc3200_wifi.h"
 
-struct v7 *v7;
+struct v7 *s_v7;
 const char *sj_version = "TODO";
 
-void init_v7(void *stack_base) {
+struct v7 *init_v7(void *stack_base) {
   struct v7_create_opts opts;
 
   opts.object_arena_size = 164;
@@ -43,7 +45,7 @@ void init_v7(void *stack_base) {
   opts.property_arena_size = 400;
   opts.c_stack_base = stack_base;
 
-  v7 = v7_create_opt(opts);
+  return v7_create_opt(opts);
 }
 
 static void blinkenlights_task(void *arg) {
@@ -81,34 +83,35 @@ void sj_prompt_init_hal(struct v7 *v7) {
   (void) v7;
 }
 
-static void fossa_poll_task(void *arg) {
-  fossa_init();
-  while (1) {
-    if (!fossa_poll()) osi_Sleep(2);
-  }
-}
-
 static void v7_task(void *arg) {
-  char dummy;
+  struct v7 *v7 = s_v7;
   printf("\n\nSmart.JS for CC3200\n");
 
   osi_MsgQCreate(&s_v7_q, "V7", sizeof(struct prompt_event), 32 /* len */);
   osi_InterruptRegister(CONSOLE_UART_INT, uart_int, INT_PRIORITY_LVL_1);
   MAP_UARTIntEnable(CONSOLE_UART, UART_INT_RX);
   sl_Start(NULL, NULL, NULL);
-  init_v7(&dummy);
+
+  v7 = s_v7 = init_v7(&v7);
+  sj_init_timers(v7);
   sj_init_v7_ext(v7);
   init_wifi(v7);
   if (init_fs(v7) != 0) {
     fprintf(stderr, "FS initialization failed.\n");
   }
+  mongoose_init();
   sj_init_simple_http_client(v7);
-  osi_TaskCreate(fossa_poll_task, (const signed char *) "fossa", 7 * 1024, NULL,
-                 2, NULL);
+  init_i2cjs(v7);
+  v7_val_t res;
+  if (v7_exec_file(v7, "smart.js", &res) != V7_OK) {
+    fprintf(stderr, "cannot run smart.js: ");
+    v7_fprint(stderr, v7, res);
+  }
   sj_prompt_init(v7);
   while (1) {
     struct prompt_event pe;
-    osi_MsgQRead(&s_v7_q, &pe, OSI_WAIT_FOREVER);
+    mongoose_poll(MONGOOSE_POLL_LENGTH_MS);
+    if (osi_MsgQRead(&s_v7_q, &pe, V7_POLL_LENGTH_MS) != OSI_OK) continue;
     switch (pe.type) {
       case PROMPT_CHAR_EVENT: {
         sj_prompt_process_char((char) ((int) pe.data));

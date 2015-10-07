@@ -1,5 +1,5 @@
-#ifndef V7_GDB_INCLUDED
-#define V7_GDB_INCLUDED
+#ifndef ESP_EXC_INCLUDED
+#define ESP_EXC_INCLUDED
 
 /*
  * the saved registers begin at a fixed position in the xtos
@@ -9,7 +9,7 @@
  * so it should work on future SDK updates, but not necessarily on future
  * revisions of the chip.
  */
-#define V7_GDB_SP_OFFSET 0x100
+#define ESP_EXC_SP_OFFSET 0x100
 
 /*
  * Addresses in this range are guaranteed to be readable without faulting.
@@ -21,13 +21,15 @@
 #define ESP_LOWER_VALID_ADDRESS 0x20000000
 #define ESP_UPPER_VALID_ADDRESS 0x60000000
 
+#ifndef RTOS_SDK
+
 /*
  * Constructed by xtos.
  *
  * There is a UserFrame structure in
  * ./esp_iot_rtos_sdk/extra_include/xtensa/xtruntime-frames.h
  */
-struct xtos_saved_regs {
+struct xtensa_stack_frame {
   uint32_t pc; /* instruction causing the trap */
   uint32_t ps;
   uint32_t sar;
@@ -35,6 +37,19 @@ struct xtos_saved_regs {
   uint32_t a0;    /* when __XTENSA_CALL0_ABI__ is true */
   uint32_t a[16]; /* a2 - a15 */
 };
+
+#else
+
+/* from <freertos/xtensa_context.h> */
+struct xtensa_stack_frame {
+  uint32_t exit;  /* (offset 0) exit point for dispatch */
+  uint32_t pc;    /* return address */
+  uint32_t ps;    /* at level 1 ps.excm is set here */
+  uint32_t a[16]; /* a[1] is stack ptr before interrupt */
+  uint32_t sar;
+};
+
+#endif
 
 /*
  * Register file in the format lx106 gdb port expects it.
@@ -52,7 +67,7 @@ struct regfile {
   uint32_t ps;
 };
 
-void gdb_init();
-void gdb_exception_handler(struct xtos_saved_regs *frame);
+void esp_exception_handler(struct xtensa_stack_frame *frame);
+void esp_exception_handler_init();
 
-#endif /* V7_GDB_INCLUDED */
+#endif /* ESP_EXC_INCLUDED */

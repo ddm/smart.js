@@ -61,8 +61,6 @@ static char rx_buf[RX_BUFFER_SIZE];
 static unsigned s_system_uartno = UART_MAIN;
 static unsigned debug_enabled = 0;
 
-int gdb_read_uart_buf(char *buf);
-
 FAST static void rx_isr(void *param) {
   /* TODO(alashkin): add errors checking */
   unsigned int peri_reg = READ_PERI_REG(UART_INTR_STATUS(UART_MAIN));
@@ -97,21 +95,7 @@ FAST static void rx_isr(void *param) {
   }
 }
 
-#ifdef V7_ESP_GDB_SERVER
-
-int gdb_read_uart() {
-  static char buf[256];
-  static int pos = 0;
-  if (pos == 0) {
-    pos = gdb_read_uart_buf(buf);
-  }
-  if (pos == 0) {
-    return -1;
-  }
-  return buf[--pos];
-}
-
-int gdb_read_uart_buf(char *buf) {
+static int blocking_read_uart_buf(char *buf) {
   unsigned int peri_reg = READ_PERI_REG(UART_INTR_STATUS(UART_MAIN));
 
   if ((peri_reg & UART_RXBUF_FULL) != 0 || (peri_reg & UART_RX_NEW) != 0) {
@@ -132,9 +116,20 @@ int gdb_read_uart_buf(char *buf) {
   }
   return 0;
 }
-#endif
 
-static void uart_tx_char(unsigned uartno, char ch) {
+int blocking_read_uart() {
+  static char buf[256];
+  static int pos = 0;
+  if (pos == 0) {
+    pos = blocking_read_uart_buf(buf);
+  }
+  if (pos == 0) {
+    return -1;
+  }
+  return buf[--pos];
+}
+
+void uart_tx_char(unsigned uartno, char ch) {
   while (1) {
     uint32 fifo_cnt =
         (READ_PERI_REG(UART_DATA_STATUS(uartno)) & 0x00FF0000) >> 16;
@@ -145,15 +140,23 @@ static void uart_tx_char(unsigned uartno, char ch) {
   WRITE_PERI_REG(UART_BUF(uartno), ch);
 }
 
-void uart_write(int fd, char *p, size_t len) {
-  size_t i;
+void uart_putchar(int fd, char ch) {
   int uart = (fd == 2) ? s_system_uartno : UART_MAIN;
   if (fd == 2 && !debug_enabled) return;
 
+  if (ch == '\n') uart_tx_char(uart, '\r');
+  uart_tx_char(uart, ch);
+}
+
+void uart_write(int fd, const char *p, size_t len) {
+  size_t i;
   for (i = 0; i < len; i++) {
-    if (p[i] == '\n') uart_tx_char(uart, '\r');
-    uart_tx_char(uart, p[i]);
+    uart_putchar(fd, p[i]);
   }
+}
+
+void uart_puts(int fd, const char *s) {
+  uart_write(fd, s, strlen(s));
 }
 
 void process_rx_buf(int tail) {
@@ -188,14 +191,13 @@ void uart_main_init(int baud_rate) {
 
 #ifndef RTOS_SDK
   ETS_UART_INTR_ATTACH(rx_isr, 0);
+  ETS_INTR_ENABLE(ETS_UART_INUM);
 #else
   _xt_isr_attach(ETS_UART_INUM, rx_isr, 0);
+  _xt_isr_unmask(1 << ETS_UART_INUM);
 #endif
-
-  gpio_enable_intr(ETS_UART_INUM);
 }
 
-#ifndef RTOS_TODO
 static void uart_system_tx_char(char ch) {
   if (ch == '\n') {
     uart_tx_char(s_system_uartno, '\r');
@@ -204,7 +206,6 @@ static void uart_system_tx_char(char ch) {
     uart_tx_char(s_system_uartno, ch);
   }
 }
-#endif
 
 int uart_redirect_debug(int mode) {
   switch (mode) {
@@ -242,7 +243,5 @@ void uart_debug_init(unsigned periph, unsigned baud_rate) {
   /* Magic: set 8-N-1 mode */
   WRITE_PERI_REG(UART_CONF_TX(UART_DEBUG), 0xC);
 
-#ifndef RTOS_TODO
   os_install_putc1((void *) uart_system_tx_char);
-#endif
 }

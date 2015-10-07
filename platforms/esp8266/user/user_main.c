@@ -11,9 +11,8 @@
 #include "util.h"
 #include "esp_missing_includes.h"
 #include "esp_uart.h"
-#include "v7_gdb.h"
+#include "esp_exc.h"
 #include "v7_fs.h"
-#include "v7_flash_bytes.h"
 #include "esp_uart.h"
 #include "sj_prompt.h"
 
@@ -26,9 +25,8 @@
 #include <stdio.h>
 #include "esp_missing_includes.h"
 #include "v7_esp.h"
-#include "v7_flash_bytes.h"
-#include "v7_gdb.h"
 #include "esp_uart.h"
+#include "esp_exc.h"
 #include "sj_prompt.h"
 #include "util.h"
 #include "v7_fs.h"
@@ -53,13 +51,6 @@ void start_cmd(void *dummy) {
 
 #ifndef V7_NO_FS
   init_smartjs();
-#endif
-
-#if !defined(V7_NO_FS) && !defined(NO_EXEC_INITJS)
-  v7_run_startup();
-
-  /* Example debug message, enable by calling Debug.setOutput(1) in init.js */
-  fprintf(stderr, "init.js called\n");
 #endif
 
 #if !defined(NO_PROMPT)
@@ -97,17 +88,7 @@ void user_init() {
   setvbuf(stdout, NULL, _IONBF, 0);
   setvbuf(stderr, NULL, _IONBF, 0);
 
-#ifdef V7_ESP_GDB_SERVER
-  /* registers exception handlers so that you can hook in gdb on crashes */
-  gdb_init();
-#endif
-
-#ifdef V7_ESP_FLASH_ACCESS_EMUL
-  /*
-   * registers exception handlers that allow reading arbitrary data from flash
-   */
-  flash_emul_init();
-#endif
+  esp_exception_handler_init();
 
 #ifndef RTOS_TODO
   gpio_init();

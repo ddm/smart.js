@@ -34,6 +34,8 @@ var Clubby = function(arg) {
     }
   };
 
+  var me = this;
+
   var reconnect = function() {
     var url = arg.url || defaultUrl;
     log('reconnecting to [' + url + ']');
@@ -50,6 +52,10 @@ var Clubby = function(arg) {
       $.each(config.rdy, function(i, r) { r()});
       config.rdy = [];
     };
+
+    // This is a non-standard callback.
+    // Receives number of bytes still waiting to be sent to the client.
+    ws.onsend = config.onsend;
 
     ws.onmessage = function(ev) {
       // Dispatch responses to the correct callback
@@ -84,7 +90,7 @@ var Clubby = function(arg) {
                   delete res[rk];
                 }
                 log("sending", req);
-                ws.send(JSON.stringify(req));
+                me._send(req);
               };
 
               if (h.length > 1) {
@@ -121,6 +127,34 @@ var Clubby = function(arg) {
   reconnect();
 };
 
+/*
+ * UBJSON disabled until we can request WS extensions to
+ * the WebSocket API.
+ */
+/*
+if (typeof UBJSON !== "undefined") {
+  Clubby.prototype._send = function(req) {
+    var ws = this.config.ws, first = true;
+    UBJSON.render(req, function(b) {
+      ws.send(new Blob(first ? [b, undefined] : [undefined,b,undefined]));
+      first = false;
+    }, function(e) {
+      if (e !== undefined && this.config.log) {
+        console.log("error rendering", e);
+      }
+      ws.send(new Blob([undefined, ""]));
+    });
+  }
+} else {
+  Clubby.prototype._send = function(req) {
+    this.config.ws.send(JSON.stringify(req));
+  }
+}
+*/
+Clubby.prototype._send = function(req) {
+  this.config.ws.send(JSON.stringify(req));
+}
+
 Clubby.prototype.call = function(dst, cmd, callback) {
   var c = this.config;
   var log = function(a,b) {
@@ -138,7 +172,7 @@ Clubby.prototype.call = function(dst, cmd, callback) {
   }
   if (c.ws.readyState == WebSocket.OPEN) {
     log('call sending: ', msg);
-    c.ws.send(msg);
+    this._send(req);
   } else if (c.ws.readyState == WebSocket.CLOSED) {
     c.ws.close();
   } else {
