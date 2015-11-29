@@ -32,7 +32,7 @@ s32_t mem_spiffs_erase(u32_t addr, u32_t size) {
   return SPIFFS_OK;
 }
 
-void mem_spiffs_mount() {
+int mem_spiffs_mount() {
   spiffs_config cfg;
 
   cfg.phys_size = image_size;
@@ -46,10 +46,8 @@ void mem_spiffs_mount() {
   cfg.hal_write_f = mem_spiffs_write;
   cfg.hal_erase_f = mem_spiffs_erase;
 
-  if (SPIFFS_mount(&fs, &cfg, spiffs_work_buf, spiffs_fds, sizeof(spiffs_fds),
-                   0, 0, 0) == -1) {
-    fprintf(stderr, "SPIFFS_mount failed: %d\n", SPIFFS_errno(&fs));
-  }
+  return SPIFFS_mount(&fs, &cfg, spiffs_work_buf, spiffs_fds,
+                      sizeof(spiffs_fds), 0, 0, 0);
 }
 
 void copy(char *path, char *fname) {
@@ -141,7 +139,12 @@ int main(int argc, char **argv) {
   }
 
   mem_spiffs_erase(0, image_size);
-  mem_spiffs_mount();
+  mem_spiffs_mount();  // Will fail but is required.
+  SPIFFS_format(&fs);
+  if (mem_spiffs_mount() != SPIFFS_OK) {
+    fprintf(stderr, "SPIFFS_mount failed: %d\n", SPIFFS_errno(&fs));
+    return;
+  }
 
   fprintf(stderr, "adding files in directory %s\n", root_dir);
   if ((dir = opendir(root_dir)) == NULL) {
@@ -152,5 +155,11 @@ int main(int argc, char **argv) {
   }
 
   fwrite(image, image_size, 1, stdout);
+
+  u32_t total, used;
+  SPIFFS_info(&fs, &total, &used);
+  fprintf(stderr, "Image stats: size=%u, space: total=%u, used=%u, free=%u\n",
+          (unsigned int) image_size, total, used, total - used);
+
   return 0;
 }

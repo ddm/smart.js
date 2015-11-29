@@ -5,9 +5,12 @@
 
 #include <QDir>
 #include <QFile>
+#include <QList>
 #include <QMainWindow>
+#include <QMessageBox>
 #include <QMultiMap>
 #include <QNetworkConfigurationManager>
+#include <QPair>
 #include <QSerialPort>
 #include <QSettings>
 #include <QString>
@@ -17,10 +20,12 @@
 #include <common/util/status.h>
 
 #include "hal.h"
+#include "prompter.h"
 #include "ui_main.h"
 
+class Config;
+class PrompterImpl;
 class QAction;
-class QCommandLineParser;
 class QEvent;
 class QSerialPort;
 
@@ -30,7 +35,7 @@ class MainDialog : public QMainWindow {
   Q_OBJECT
 
  public:
-  MainDialog(QCommandLineParser *parser, QWidget *parent = 0);
+  MainDialog(Config *config, QWidget *parent = 0);
 
  protected:
   bool eventFilter(QObject *, QEvent *);  // used for input history navigation
@@ -70,11 +75,18 @@ class MainDialog : public QMainWindow {
   void enableControlsForCurrentState();
   void showAboutBox();
 
+  void showPrompt(QString text,
+                  QList<QPair<QString, QMessageBox::ButtonRole>> buttons);
+
 signals:
   void gotPrompt();
+  void showPromptResult(int clicked_button);
+#if (QT_VERSION < QT_VERSION_CHECK(5, 4, 0))
+  void updatePlatformSelector(int index);
+#endif
 
  private:
-  QCommandLineParser *parser_ = nullptr;
+  Config *config_ = nullptr;
   bool skip_detect_warning_ = false;
   std::unique_ptr<QThread> worker_;
   QDir fwDir_;
@@ -90,6 +102,7 @@ signals:
   std::unique_ptr<HAL> hal_;
   bool scroll_after_flashing_ = false;
   std::unique_ptr<QFile> console_log_;
+  PrompterImpl *prompter_;
 
   QNetworkConfigurationManager net_mgr_;
 

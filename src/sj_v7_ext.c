@@ -6,7 +6,7 @@
 
 extern const char *sj_version;
 
-static v7_val_t OS_prof(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
+static v7_val_t OS_prof(struct v7 *v7) {
   v7_val_t result = v7_create_object(v7);
   v7_own(v7, &result);
 
@@ -21,27 +21,23 @@ static v7_val_t OS_prof(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
   return result;
 }
 
-static v7_val_t OS_wdt_feed(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
+static v7_val_t OS_wdt_feed(struct v7 *v7) {
   (void) v7;
-  (void) this_obj;
-  (void) args;
   sj_wdt_feed();
 
   return v7_create_boolean(1);
 }
 
-static v7_val_t OS_reset(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
+static v7_val_t OS_reset(struct v7 *v7) {
   (void) v7;
-  (void) this_obj;
-  (void) args;
   sj_system_restart();
 
   /* Unreachable */
   return v7_create_boolean(1);
 }
 
-static v7_val_t global_usleep(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
-  v7_val_t usecsv = v7_array_get(v7, args, 0);
+static v7_val_t global_usleep(struct v7 *v7) {
+  v7_val_t usecsv = v7_arg(v7, 0);
   int usecs;
   if (!v7_is_number(usecsv)) {
     printf("usecs is not a double\n\r");
@@ -64,7 +60,7 @@ static v7_val_t global_usleep(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
  * propnfree: number of free property slots in js heap
  * funcnfree: number of free function slots in js heap
  */
-static v7_val_t GC_stat(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
+static v7_val_t GC_stat(struct v7 *v7) {
   /* take a snapshot of the stats that would change as we populate the result */
   size_t sysfree = sj_get_free_heap_size();
   size_t jssize = v7_heap_stat(v7, V7_HEAP_STAT_HEAP_SIZE);
@@ -106,23 +102,43 @@ static v7_val_t GC_stat(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
 /*
  * Force a pass of the garbage collector.
  */
-static v7_val_t GC_gc(struct v7 *v7, v7_val_t this_obj, v7_val_t args) {
-  (void) this_obj;
-  (void) args;
-
+static v7_val_t GC_gc(struct v7 *v7) {
   v7_gc(v7, 1);
   return v7_create_undefined();
+}
+
+void sj_print_exception(struct v7 *v7, v7_val_t exc, const char *msg) {
+  /*
+   * TOD(mkm) add some API to hal to fetch the current debug mode
+   * and avoid logging to stdout if according no error messages should go
+   * there (e.g. because it's used to implement a serial protocol).
+   */
+  FILE *fs[] = {stdout, stderr};
+  size_t i;
+
+  /*
+   * own because the exception could be a string,
+   * and if not owned here, print_stack_trace could get
+   * an unrelocated argument an ASN violation.
+   */
+  v7_own(v7, &exc);
+
+  for (i = 0; i < sizeof(fs) / sizeof(fs[0]); i++) {
+    fprintf(fs[i], "%s: ", msg);
+    v7_fprintln(fs[i], v7, exc);
+#if V7_ENABLE__StackTrace
+    v7_fprint_stack_trace(fs[i], v7, exc);
+#endif
+  }
+
+  v7_disown(v7, &exc);
 }
 
 void _sj_invoke_cb(struct v7 *v7, v7_val_t func, v7_val_t this_obj,
                    v7_val_t args) {
   v7_val_t res;
   if (v7_apply(v7, &res, func, this_obj, args) == V7_EXEC_EXCEPTION) {
-    fprintf(stderr, "cb threw exception: ");
-    v7_fprintln(stderr, v7, res);
-#if V7_ENABLE__StackTrace
-    v7_fprint_stack_trace(stderr, v7, res);
-#endif
+    sj_print_exception(v7, res, "cb threw exception");
   }
 }
 
@@ -144,11 +160,26 @@ void sj_invoke_cb2(struct v7 *v7, v7_val_t cb, v7_val_t arg1, v7_val_t arg2) {
 }
 
 void sj_invoke_cb1(struct v7 *v7, v7_val_t cb, v7_val_t arg) {
-  sj_invoke_cb2(v7, cb, arg, v7_create_undefined());
+  v7_val_t args;
+  v7_own(v7, &cb);
+  v7_own(v7, &arg);
+  args = v7_create_array(v7);
+  v7_own(v7, &args);
+  v7_array_push(v7, args, arg);
+  sj_invoke_cb(v7, cb, v7_get_global(v7), args);
+  v7_disown(v7, &args);
+  v7_disown(v7, &arg);
+  v7_disown(v7, &cb);
 }
 
 void sj_invoke_cb0(struct v7 *v7, v7_val_t cb) {
-  sj_invoke_cb2(v7, cb, v7_create_undefined(), v7_create_undefined());
+  v7_val_t args;
+  v7_own(v7, &cb);
+  args = v7_create_array(v7);
+  v7_own(v7, &args);
+  sj_invoke_cb(v7, cb, v7_get_global(v7), args);
+  v7_disown(v7, &args);
+  v7_disown(v7, &cb);
 }
 
 void sj_init_v7_ext(struct v7 *v7) {

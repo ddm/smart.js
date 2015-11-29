@@ -22,6 +22,7 @@
 #include <common/util/error_codes.h>
 #include <common/util/statusor.h>
 
+#include "config.h"
 #include "fs.h"
 #include "serial.h"
 
@@ -36,22 +37,36 @@
 
 namespace ESP8266 {
 
+namespace {
+
 const char kFlashParamsOption[] = "esp8266-flash-params";
 const char kDisableEraseWorkaroundOption[] = "esp8266-disable-erase-workaround";
 const char kSkipReadingFlashParamsOption[] =
     "esp8266-skip-reading-flash-params";
-const char kFlashingDataPort[] = "esp8266-flashing-data-port";
-const char kInvertDTRRTS[] = "esp8266-invert-dtr-rts";
+const char kFlashingDataPortOption[] = "esp8266-flashing-data-port";
+const char kInvertDTRRTSOption[] = "esp8266-invert-dtr-rts";
+const char kSPIFFSOffsetOption[] = "esp8266-spiffs-offset";
+const char kDefaultSPIFFSOffset[] = "0x70000";
+const char kSPIFFSSizeOption[] = "esp8266-spiffs-size";
+const char kDefaultSPIFFSSize[] = "49152";
 
-namespace {
-
+const int kDefaultFlashBaudRate = 230400;
 const ulong writeBlockSize = 0x400;
 const ulong flashBlockSize = 4096;
 const char fwFileGlob[] = "0x*.bin";
 const ulong idBlockOffset = 0x10000;
 const ulong idBlockSize = flashBlockSize;
-const ulong spiffsBlockOffset = 0x6d000;
-const ulong spiffsBlockSize = 0x10000;
+
+enum ESP8266ROMCommand {
+  cmdFlashWriteStart = 0x02,
+  cmdFlashWriteBlock = 0x03,
+  cmdFlashWriteFinish = 0x04,
+  cmdRAMWriteStart = 0x05,
+  cmdRAMWriteFinish = 0x06,
+  cmdRAMWriteBlock = 0x07,
+  cmdSync = 0x08,
+  cmdReadReg = 0x0A,
+};
 
 // Copy-pasted from
 // https://github.com/themadinventor/esptool/blob/e96336f6561109e67afe03c0695d1e5b0de15da6/esptool.py
@@ -255,13 +270,13 @@ QByteArray read_register(QSerialPort* serial, quint32 addr) {
   QDataStream s(&payload, QIODevice::WriteOnly);
   s.setByteOrder(QDataStream::LittleEndian);
   s << addr;
-  writeCommand(serial, 0x0A, payload);
+  writeCommand(serial, cmdReadReg, payload);
   auto resp = readResponse(serial);
   if (!resp.valid) {
-    qDebug() << "Invalid response to command " << 0x0A;
+    qDebug() << "Invalid response to command " << cmdReadReg;
     return QByteArray();
   }
-  if (resp.command != 0x0A) {
+  if (resp.command != cmdReadReg) {
     qDebug() << "Response to unexpected command: " << resp.command;
     return QByteArray();
   }
@@ -299,7 +314,7 @@ QByteArray read_MAC(QSerialPort* serial) {
 bool sync(QSerialPort* serial) {
   QByteArray payload("\x07\x07\x12\x20");
   payload.append(QByteArray("\x55").repeated(32));
-  writeCommand(serial, 0x08, payload);
+  writeCommand(serial, cmdSync, payload);
   for (int i = 0; i < 8; i++) {
     auto resp = readResponse(serial);
     if (!resp.valid) {
@@ -337,10 +352,39 @@ void rebootIntoFirmware(QSerialPort* serial, bool inverted) {
   serial->setRequestToSend(inverted);  // pull up RESET
 }
 
+util::Status softResetFromBootloader(QSerialPort* port) {
+  // Start a fake RAM write operation.
+  QByteArray payload;
+  QDataStream s1(&payload, QIODevice::WriteOnly);
+  s1.setByteOrder(QDataStream::LittleEndian);
+  s1 << quint32(0) << quint32(0) << quint32(0) << quint32(0x40100000);
+  writeCommand(port, cmdRAMWriteStart, payload);
+  auto resp = readResponse(port);
+  if (!resp.ok()) {
+    qDebug() << "Failed to start (fake) write to RAM:" << resp.error();
+    return util::Status(util::error::ABORTED, "failed to start writing to RAM");
+  }
+  payload.clear();
+
+  // Finish RAM write and jump to ResetVector.
+  QDataStream s2(&payload, QIODevice::WriteOnly);
+  s2.setByteOrder(QDataStream::LittleEndian);
+  s2 << quint32(0) << quint32(0x40000080);
+  writeCommand(port, cmdRAMWriteFinish, payload);
+  auto resp2 = readResponse(port);
+  if (!resp2.ok()) {
+    qDebug() << "Failed to invoke ResetVector:" << resp2.error();
+    return util::Status(util::error::ABORTED, "failed to invoke ResetVector");
+  }
+
+  return util::Status::OK;
+}
+
 class FlasherImpl : public Flasher {
   Q_OBJECT
  public:
-  FlasherImpl() : id_hostname_("api.cesanta.com") {
+  FlasherImpl(Prompter* prompter)
+      : prompter_(prompter), id_hostname_("api.cesanta.com") {
   }
 
   util::Status setOption(const QString& name, const QVariant& value) override {
@@ -393,68 +437,102 @@ class FlasherImpl : public Flasher {
       }
       preserve_flash_params_ = !value.toBool();
       return util::Status::OK;
-    } else if (name == kFlashingDataPort) {
+    } else if (name == kFlashingDataPortOption) {
       if (value.type() != QVariant::String) {
         return util::Status(util::error::INVALID_ARGUMENT,
                             "value must be a string");
       }
       flashing_port_name_ = value.toString();
       return util::Status::OK;
-    } else if (name == kFlashBaudRate) {
-      if (value.type() != QVariant::String) {
+    } else if (name == kFlashBaudRateOption) {
+      if (value.type() != QVariant::Int) {
         return util::Status(util::error::INVALID_ARGUMENT,
-                            "value must be a string");
+                            "value must be a positive integer");
       }
-      bool ok = false;
-      flashing_speed_ = value.toString().toInt(&ok, 10);
-      if (!ok) {
-        flashing_speed_ = 230400;
-        return util::Status(util::error::INVALID_ARGUMENT,
-                            "value must be a decimal number");
+      flashing_speed_ = value.toInt();
+      if (flashing_speed_ <= 0) {
+        flashing_speed_ = kDefaultFlashBaudRate;
       }
       return util::Status::OK;
-    } else if (name == kInvertDTRRTS) {
+    } else if (name == kInvertDTRRTSOption) {
       if (value.type() != QVariant::Bool) {
         return util::Status(util::error::INVALID_ARGUMENT,
                             "value must be boolean");
       }
       invert_dtr_rts_ = value.toBool();
       return util::Status::OK;
+    } else if (name == kDumpFSOption) {
+      if (value.type() != QVariant::String) {
+        return util::Status(util::error::INVALID_ARGUMENT,
+                            "value must be a string");
+      }
+      fs_dump_filename_ = value.toString();
+      return util::Status::OK;
+    } else if (name == kSPIFFSOffsetOption) {
+      if (value.type() != QVariant::Int || value.toInt() <= 0) {
+        return util::Status(util::error::INVALID_ARGUMENT,
+                            "value must be a positive integer");
+      }
+      spiffs_offset_ = value.toInt();
+      return util::Status::OK;
+    } else if (name == kSPIFFSSizeOption) {
+      if (value.type() != QVariant::Int || value.toInt() <= 0) {
+        return util::Status(util::error::INVALID_ARGUMENT,
+                            "value must be a positive integer");
+      }
+      spiffs_size_ = value.toInt();
+      return util::Status::OK;
     } else {
       return util::Status(util::error::INVALID_ARGUMENT, "unknown option");
     }
   }
 
-  util::Status setOptionsFromCommandLine(
-      const QCommandLineParser& parser) override {
+  util::Status setOptionsFromConfig(const Config& config) override {
     util::Status r;
 
     QStringList boolOpts({kOverwriteFSOption, kSkipIdGenerationOption,
                           kDisableEraseWorkaroundOption,
-                          kSkipReadingFlashParamsOption, kInvertDTRRTS});
-    QStringList stringOpts({kIdDomainOption, kFlashParamsOption,
-                            kFlashingDataPort, kFlashBaudRate});
-
+                          kSkipReadingFlashParamsOption, kInvertDTRRTSOption});
     for (const auto& opt : boolOpts) {
-      auto s = setOption(opt, parser.isSet(opt));
+      auto s = setOption(opt, config.isSet(opt));
       if (!s.ok()) {
-        r = util::Status(
+        return util::Status(
             s.error_code(),
             (opt + ": " + s.error_message().c_str()).toStdString());
       }
     }
+
+    QStringList stringOpts({kIdDomainOption, kFlashParamsOption,
+                            kFlashingDataPortOption, kDumpFSOption});
     for (const auto& opt : stringOpts) {
       // XXX: currently there's no way to "unset" a string option.
-      if (parser.isSet(opt)) {
-        auto s = setOption(opt, parser.value(opt));
+      if (config.isSet(opt)) {
+        auto s = setOption(opt, config.value(opt));
         if (!s.ok()) {
-          r = util::Status(
+          return util::Status(
               s.error_code(),
               (opt + ": " + s.error_message().c_str()).toStdString());
         }
       }
     }
-    return r;
+
+    QStringList intOpts(
+        {kFlashBaudRateOption, kSPIFFSOffsetOption, kSPIFFSSizeOption});
+    for (const auto& opt : intOpts) {
+      bool ok;
+      int value = config.value(opt).toInt(&ok, 0);
+      if (!ok) {
+        return util::Status(util::error::INVALID_ARGUMENT,
+                            (opt + ": Invalid numeric value.").toStdString());
+      }
+      auto s = setOption(opt, value);
+      if (!s.ok()) {
+        return util::Status(
+            s.error_code(),
+            (opt + ": " + s.error_message().c_str()).toStdString());
+      }
+    }
+    return util::Status::OK;
   }
 
   util::Status load(const QString& path) override {
@@ -677,23 +755,33 @@ class FlasherImpl : public Flasher {
       }
     }
 
-    if (merge_flash_filesystem_ && images_.contains(spiffsBlockOffset)) {
-      emit statusMessage(tr("Reading file system image..."), true);
-
+    qInfo() << QString("SPIFFS params: %1 @ 0x%2")
+                   .arg(spiffs_size_)
+                   .arg(spiffs_offset_, 0, 16)
+                   .toUtf8();
+    if (merge_flash_filesystem_ && images_.contains(spiffs_offset_)) {
       auto res = mergeFlashLocked(data_port);
       if (res.ok()) {
-        images_[spiffsBlockOffset] = res.ValueOrDie();
+        if (res.ValueOrDie().size() > 0) {
+          images_[spiffs_offset_] = res.ValueOrDie();
+        } else {
+          images_.remove(spiffs_offset_);
+        }
         emit statusMessage(tr("Merged flash content"), true);
       } else {
         emit statusMessage(tr("Failed to merge flash content: %1")
                                .arg(res.status().ToString().c_str()),
                            true);
+        // Temporary: SPIFFS compatibility was broken between 0.3.3 and 0.3.4,
+        // overwrite FS for now.
         if (!id_generated) {
           return util::Status(
               util::error::UNKNOWN,
               tr("failed to merge flash filesystem").toStdString());
         }
       }
+    } else if (merge_flash_filesystem_) {
+      qInfo() << "No SPIFFS image in new firmware";
     }
 
     written_blocks_ = 0;
@@ -854,7 +942,7 @@ class FlasherImpl : public Flasher {
     }
     s << quint32(blocks) << quint32(writeBlockSize) << quint32(addr);
     qDebug() << "Attempting to start flashing...";
-    writeCommand(port, 0x02, payload);
+    writeCommand(port, cmdFlashWriteStart, payload);
     const auto resp = readResponse(port, 30000);
     if (!resp.ok()) {
       return util::Status(
@@ -871,7 +959,7 @@ class FlasherImpl : public Flasher {
     s.setByteOrder(QDataStream::LittleEndian);
     s << quint32(bytes.length()) << quint32(seq) << quint32(0) << quint32(0);
     payload.append(bytes);
-    writeCommand(port, 0x03, payload, checksum(bytes));
+    writeCommand(port, cmdFlashWriteBlock, payload, checksum(bytes));
     const auto resp = readResponse(port, 10000);
     if (!resp.ok()) {
       return util::Status(util::error::ABORTED, resp.error().toStdString());
@@ -881,7 +969,7 @@ class FlasherImpl : public Flasher {
 
   util::Status leaveFlashingModeLocked(QSerialPort* port) {
     QByteArray payload("\x01\x00\x00\x00", 4);
-    writeCommand(port, 0x04, payload);
+    writeCommand(port, cmdFlashWriteFinish, payload);
     const auto resp = readResponse(port, 10000);
     if (!resp.ok()) {
       qDebug() << "Failed to leave flashing mode." << resp.error();
@@ -917,7 +1005,7 @@ class FlasherImpl : public Flasher {
     s1 << quint32(stub.length()) << quint32(1) << quint32(stub.length())
        << quint32(0x40100000);
 
-    writeCommand(port, 0x05, payload);
+    writeCommand(port, cmdRAMWriteStart, payload);
     auto resp = readResponse(port);
     if (!resp.ok()) {
       qDebug() << "Failed to start writing to RAM." << resp.error();
@@ -931,7 +1019,7 @@ class FlasherImpl : public Flasher {
     s2 << quint32(stub.length()) << quint32(0) << quint32(0) << quint32(0);
     payload.append(stub);
     qDebug() << "Stub length:" << showbase << hex << stub.length();
-    writeCommand(port, 0x07, payload, checksum(stub));
+    writeCommand(port, cmdRAMWriteBlock, payload, checksum(stub));
     resp = readResponse(port);
     if (!resp.ok()) {
       qDebug() << "Failed to write to RAM." << resp.error();
@@ -942,7 +1030,7 @@ class FlasherImpl : public Flasher {
     QDataStream s3(&payload, QIODevice::WriteOnly);
     s3.setByteOrder(QDataStream::LittleEndian);
     s3 << quint32(0) << quint32(0x4010001c);
-    writeCommand(port, 0x06, payload);
+    writeCommand(port, cmdRAMWriteFinish, payload);
     resp = readResponse(port);
     if (!resp.ok()) {
       qDebug() << "Failed to complete writing to RAM." << resp.error();
@@ -988,25 +1076,47 @@ class FlasherImpl : public Flasher {
   // or by the software update utility, while the core system uploaded by
   // the flasher should only upload a few core files.
   util::StatusOr<QByteArray> mergeFlashLocked(QSerialPort* port) {
-    auto res = readFlashLocked(port, spiffsBlockOffset, spiffsBlockSize);
-    if (!res.ok()) {
-      return res.status();
+    emit statusMessage(tr("Reading file system image (%1 @ %2)...")
+                           .arg(spiffs_size_)
+                           .arg(spiffs_offset_, 0, 16),
+                       true);
+    auto dev_fs = readFlashLocked(port, spiffs_offset_, spiffs_size_);
+    if (!dev_fs.ok()) {
+      return dev_fs.status();
     }
-
-    SPIFFS bundled(images_[spiffsBlockOffset]);
-    SPIFFS dev(res.ValueOrDie());
-
-    auto err = dev.merge(bundled);
-    if (!err.ok()) {
-      return err;
-    }
-    if (!files_.empty()) {
-      err = dev.mergeFiles(files_);
-      if (!err.ok()) {
-        return err;
+    if (!fs_dump_filename_.isEmpty()) {
+      QFile f(fs_dump_filename_);
+      if (f.open(QIODevice::WriteOnly)) {
+        f.write(dev_fs.ValueOrDie());
+      } else {
+        qCritical() << "Failed to open" << fs_dump_filename_ << ":"
+                    << f.errorString();
       }
     }
-    return dev.data();
+    auto merged =
+        mergeFilesystems(dev_fs.ValueOrDie(), images_[spiffs_offset_]);
+    if (merged.ok() && !files_.empty()) {
+      merged = mergeFiles(merged.ValueOrDie(), files_);
+    }
+    if (!merged.ok()) {
+      QString msg = tr("Failed to merge file system: ") +
+                    QString(merged.status().ToString().c_str()) +
+                    tr("\nWhat should we do?");
+      int answer =
+          prompter_->Prompt(msg, {{tr("Cancel"), QMessageBox::RejectRole},
+                                  {tr("Write new"), QMessageBox::YesRole},
+                                  {tr("Keep old"), QMessageBox::NoRole}});
+      qCritical() << msg << "->" << answer;
+      switch (answer) {
+        case 0:
+          return merged.status();
+        case 1:
+          return images_[spiffs_offset_];
+        case 2:
+          return QByteArray();
+      }
+    }
+    return merged;
   }
 
   util::StatusOr<bool> findIdLocked(QSerialPort* port) {
@@ -1032,6 +1142,8 @@ class FlasherImpl : public Flasher {
                                     QCryptographicHash::Sha1);
   }
 
+  Prompter* prompter_;
+
   mutable QMutex lock_;
   QMap<ulong, QByteArray> images_;
   QMap<QString, QByteArray> files_;
@@ -1046,6 +1158,9 @@ class FlasherImpl : public Flasher {
   QString flashing_port_name_;
   int flashing_speed_ = 230400;
   bool invert_dtr_rts_ = false;
+  ulong spiffs_size_ = 0;
+  ulong spiffs_offset_ = 0;
+  QString fs_dump_filename_;
 };
 
 class ESP8266HAL : public HAL {
@@ -1068,10 +1183,18 @@ class ESP8266HAL : public HAL {
     }
     qInfo() << "MAC address: " << mac;
 
+    // Reset the device, otherwise it will remember the detected baud rate
+    // which may prevent it from flashing successfully.
+    auto st = softResetFromBootloader(s.get());
+    if (!st.ok()) {
+      qWarning() << "Failed to reset device after probing:"
+                 << st.error_message().c_str();
+    }
+
     return util::Status::OK;
   }
-  std::unique_ptr<Flasher> flasher() const override {
-    return std::move(std::unique_ptr<Flasher>(new FlasherImpl));
+  std::unique_ptr<Flasher> flasher(Prompter* prompter) const override {
+    return std::move(std::unique_ptr<Flasher>(new FlasherImpl(prompter)));
   }
 
   std::string name() const override {
@@ -1150,36 +1273,49 @@ util::StatusOr<int> flashParamsFromString(const QString& s) {
   }
 }
 
-void addOptions(QCommandLineParser* parser) {
-  parser->addOptions(
-      {{kFlashParamsOption,
-        "Override params bytes read from existing firmware. Either a "
-        "comma-separated string or a number. First component of the string is "
-        "the flash mode, must be one of: qio (default), qout, dio, dout. "
-        "Second component is flash size, value values: 2m, 4m (default), 8m, "
-        "16m, 32m, 16m-c1, 32m-c1, 32m-c2. Third one is flash frequency, valid "
-        "values: 40m (default), 26m, 20m, 80m. If it's a number, only 2 lowest "
-        "bytes from it will be written in the header of section 0x0000 in "
-        "big-endian byte order (i.e. high byte is put at offset 2, low byte at "
-        "offset 3).",
-        "params"},
-       {kSkipReadingFlashParamsOption,
-        "If set and --esp8266-flash-params is not used, reading flash params "
-        "from the device will not be attempted and image at 0x0000 will be "
-        "written as is."},
-       {kDisableEraseWorkaroundOption,
-        "ROM code can erase up to 16 extra 4KB sectors when flashing firmware. "
-        "This flag disables the workaround that makes it erase at most 1 extra "
-        "sector."},
-       {kFlashingDataPort,
-        "If set, communication with ROM will be performed using another serial "
-        "port. DTR/RTS signals for rebooting and console will still use the "
-        "main port.",
-        "port"},
-       {kInvertDTRRTS,
-        "If set, code that reboots the board will assume that your "
-        "USB-to-serial adapter has logical levels for DTR and RTS lines "
-        "inverted."}});
+void addOptions(Config* config) {
+  // QCommandLineOption supports C++11-style initialization only since Qt 5.4.
+  QList<QCommandLineOption> opts;
+  opts.append(QCommandLineOption(
+      kFlashParamsOption,
+      "Override params bytes read from existing firmware. Either a "
+      "comma-separated string or a number. First component of the string is "
+      "the flash mode, must be one of: qio (default), qout, dio, dout. "
+      "Second component is flash size, value values: 2m, 4m (default), 8m, "
+      "16m, 32m, 16m-c1, 32m-c1, 32m-c2. Third one is flash frequency, valid "
+      "values: 40m (default), 26m, 20m, 80m. If it's a number, only 2 lowest "
+      "bytes from it will be written in the header of section 0x0000 in "
+      "big-endian byte order (i.e. high byte is put at offset 2, low byte at "
+      "offset 3).",
+      "params"));
+  opts.append(QCommandLineOption(
+      kSkipReadingFlashParamsOption,
+      "If set and --esp8266-flash-params is not used, reading flash params "
+      "from the device will not be attempted and image at 0x0000 will be "
+      "written as is."));
+  opts.append(QCommandLineOption(
+      kDisableEraseWorkaroundOption,
+      "ROM code can erase up to 16 extra 4KB sectors when flashing firmware. "
+      "This flag disables the workaround that makes it erase at most 1 extra "
+      "sector."));
+  opts.append(QCommandLineOption(
+      kFlashingDataPortOption,
+      "If set, communication with ROM will be performed using another serial "
+      "port. DTR/RTS signals for rebooting and console will still use the "
+      "main port.",
+      "port"));
+  opts.append(QCommandLineOption(
+      kInvertDTRRTSOption,
+      "If set, code that reboots the board will assume that your "
+      "USB-to-serial adapter has logical levels for DTR and RTS lines "
+      "inverted."));
+  opts.append(QCommandLineOption(
+      kSPIFFSOffsetOption, "Location of the SPIFFS filesystem block in flash.",
+      "offset", kDefaultSPIFFSOffset));
+  opts.append(QCommandLineOption(kSPIFFSSizeOption,
+                                 "Size of the SPIFFS region in flash.", "size",
+                                 kDefaultSPIFFSSize));
+  config->addOptions(opts);
 }
 
 QByteArray makeIDBlock(const QString& domain) {

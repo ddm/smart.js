@@ -1,18 +1,21 @@
+#include "esp_exc.h"
+
 #include <stdio.h>
 #include <string.h>
 #include <ets_sys.h>
 #include <xtensa/corebits.h>
 #include <stdint.h>
-#include "esp_exc.h"
-#include "esp_gdb.h"
+
 #include "esp_coredump.h"
 #include "esp_flash_bytes.h"
-#include "v7_esp_hw.h"
+#include "esp_gdb.h"
+#include "esp_hw.h"
 #include "esp_uart.h"
 #include "esp_missing_includes.h"
-#include "v7_esp.h"
-#include "base64.h"
 #include "esp_uart.h"
+#include "v7_esp.h"
+
+#include "base64.h"
 
 #ifndef RTOS_SDK
 
@@ -46,18 +49,26 @@
  */
 static struct regfile regs;
 
+static void handle_exception(struct regfile *regs)
+    __attribute__((no_instrument_function));
+
 static void handle_exception(struct regfile *regs) {
   xthal_set_intenable(0);
 
 #if defined(ESP_COREDUMP) && !defined(ESP_COREDUMP_NOAUTO)
   printf("Dumping core to debug output\n");
   esp_dump_core(-1, regs);
-#endif
-#ifdef ESP_COREDUMP
+#else
   printf("if you want to dump core, type 'y'");
 #ifdef ESP_GDB_SERVER
-  printf(", or else connect with gdb");
+  printf(", or ");
 #endif
+#endif
+#ifdef ESP_GDB_SERVER
+  printf("connect with gdb now\n");
+#endif
+
+#if defined(ESP_COREDUMP_NOAUTO) || defined(ESP_GDB_SERVER)
   {
     int ch;
     while ((ch = blocking_read_uart())) {
@@ -69,14 +80,11 @@ static void handle_exception(struct regfile *regs) {
       } else if (ch == '$') {
         /* we got a GDB packet, speed up retransmission by nacking */
         printf("-");
+        gdb_server(regs);
         break;
       }
     }
   }
-  printf("\n");
-#endif
-#ifdef ESP_GDB_SERVER
-  gdb_server(regs);
 #endif
 }
 
@@ -93,6 +101,9 @@ static void handle_exception(struct regfile *regs) {
  * user stack. This might be different in other execution modes on the
  * quite variegated xtensa platform family, but that's how it works on ESP8266.
  */
+FAST void esp_exception_handler(struct xtensa_stack_frame *frame)
+    __attribute__((no_instrument_function));
+
 FAST void esp_exception_handler(struct xtensa_stack_frame *frame) {
   uint32_t cause = RSR(EXCCAUSE);
   uint32_t vaddr = RSR(EXCVADDR);
@@ -107,10 +118,20 @@ FAST void esp_exception_handler(struct xtensa_stack_frame *frame) {
   regs.litbase = RSR(LITBASE);
 
   handle_exception(&regs);
+
+  uart_write(1, "rebooting\n", 10);
+  while (tx_fifo_len(0) > 0) {
+  }
+  while (tx_fifo_len(1) > 0) {
+  }
+
   _ResetVector();
 }
 
-#else /* !RTOS_SDK */
+#else /* RTOS_SDK */
+
+FAST void esp_exception_handler(struct xtensa_stack_frame *frame)
+    __attribute__((no_instrument_function));
 
 FAST void esp_exception_handler(struct xtensa_stack_frame *frame) {
   uint32_t cause = RSR(EXCCAUSE);
@@ -138,6 +159,9 @@ FAST void esp_exception_handler(struct xtensa_stack_frame *frame) {
  *  XT_RTOS_INT_EXIT();
  * void _xt_user_exit();
  */
+
+FAST void __wrap_user_fatal_exception_handler(int cause)
+    __attribute__((no_instrument_function));
 
 FAST void __wrap_user_fatal_exception_handler(int cause) {
   int double_ex = RSR(PS) & 0x10;
@@ -170,6 +194,8 @@ FAST void __wrap_user_fatal_exception_handler(int cause) {
 }
 
 #endif /* !RTOS_SDK */
+
+void esp_exception_handler_init() __attribute__((no_instrument_function));
 
 void esp_exception_handler_init() {
 #if defined(ESP_FLASH_BYTES_EMUL) || defined(ESP_GDB_SERVER) || \

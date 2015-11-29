@@ -45,6 +45,7 @@
 #endif
 
 /*
+ * MSVC++ 14.0 _MSC_VER == 1900 (Visual Studio 2015)
  * MSVC++ 12.0 _MSC_VER == 1800 (Visual Studio 2013)
  * MSVC++ 11.0 _MSC_VER == 1700 (Visual Studio 2012)
  * MSVC++ 10.0 _MSC_VER == 1600 (Visual Studio 2010)
@@ -75,7 +76,7 @@
 
 #include <assert.h>
 #include <ctype.h>
-#include <errno.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -109,6 +110,7 @@
 #define __func__ __FILE__ ":" STR(__LINE__)
 #endif
 #define snprintf _snprintf
+#define fileno _fileno
 #define vsnprintf _vsnprintf
 #define sleep(x) Sleep((x) *1000)
 #define to64(x) _atoi64(x)
@@ -174,13 +176,17 @@ struct dirent *readdir(DIR *dir);
 #include <cc3200_libc.h>
 #include <cc3200_socket.h>
 
-#elif /* not CC3200 */ defined(MG_ESP8266) && defined(RTOS_SDK)
+#elif /* not CC3200 */ defined(MG_LWIP)
 
 #include <lwip/sockets.h>
 #include <lwip/netdb.h>
 #include <lwip/dns.h>
+
+#if defined(MG_ESP8266) && defined(RTOS_SDK)
 #include <esp_libc.h>
 #define random() os_random()
+#endif
+
 /* TODO(alashkin): check if zero is OK */
 #define SOMAXCONN 0
 #include <stdlib.h>
@@ -198,8 +204,11 @@ struct dirent *readdir(DIR *dir);
 #include <sys/select.h>
 #endif
 
-#ifndef _WIN32
+#ifndef LWIP_PROVIDE_ERRNO
 #include <errno.h>
+#endif
+
+#ifndef _WIN32
 #include <inttypes.h>
 #include <stdarg.h>
 
@@ -213,7 +222,7 @@ struct dirent *readdir(DIR *dir);
 
 #define INVALID_SOCKET (-1)
 #define INT64_FMT PRId64
-#if defined(ESP8266) || defined(MG_ESP8266)
+#if defined(ESP8266) || defined(MG_ESP8266) || defined(MG_CC3200)
 #define SIZE_T_FMT "u"
 #else
 #define SIZE_T_FMT "zu"
@@ -228,20 +237,6 @@ typedef struct stat cs_stat_t;
 int64_t strtoll(const char *str, char **endptr, int base);
 #endif
 #endif /* !_WIN32 */
-
-#define __DBG(x)                \
-  do {                          \
-    printf("%-20s ", __func__); \
-    printf x;                   \
-    putchar('\n');              \
-    fflush(stdout);             \
-  } while (0)
-
-#ifdef MG_ENABLE_DEBUG
-#define DBG __DBG
-#else
-#define DBG(x)
-#endif
 
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof(array[0]))

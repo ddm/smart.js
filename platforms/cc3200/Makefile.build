@@ -8,12 +8,25 @@ MONGOOSE_PATH ?= ../../../mongoose
 OBJDIR = build
 BINDIR = firmware
 FW_FS_SIZE = 65536
+SMARTJS_SRC ?= $(SMARTJS_PATH)/src
+SJSJS_PATH ?= $(SMARTJS_SRC)/js
+FS_DIR = fs
+FS_BUILD_DIR = $(OBJDIR)/fs
 
 include ${SDK_PATH}/tools/gcc_scripts/makedefs
 
 .PHONY: all clean flash
 
 PROG = smartjs
+
+JS_SRCS    := $(SJSJS_PATH)/clubby.js $(SJSJS_PATH)/sys_rts.js \
+              $(SJSJS_PATH)/cloud.js $(SJSJS_PATH)/swupdate.js \
+              $(SJSJS_PATH)/MCXXX_LCD.js $(SJSJS_PATH)/I2C.js \
+              $(JSBIN_EXTRA) $(SJSJS_PATH)/smart.js $(SJSJS_PATH)/demo.js \
+              $(SJSJS_PATH)/user.js
+
+JSBIN_EXT := js
+JS_EXT := js
 
 IPATH = . ${SDK_PATH} \
         ${SDK_PATH}/inc \
@@ -44,7 +57,8 @@ V7_FEATURES = -DV7_BUILD_PROFILE=1 -DV7_DISABLE_AST_TAG_NAMES \
               -DV7_ENABLE_COMPACTING_GC -DDISABLE_MD5 \
               -DV7_ENABLE__Math -DV7_ENABLE__Math__random \
               -DV7_ENABLE__Memory__stats -DV7_FORCE_STRICT_MODE \
-              -DV7_ENABLE_FILE -DV7_ENABLE__StackTrace
+              -DV7_ENABLE_FILE -DV7_ENABLE__StackTrace \
+
 
 MONGOOSE_FEATURES = -DMG_CC3200 -DMG_DISABLE_DIRECTORY_LISTING -DMG_DISABLE_DAV \
                  -DMG_DISABLE_SSI -DMG_DISABLE_FILESYSTEM -DMG_DISABLE_SOCKETPAIR \
@@ -107,8 +121,22 @@ ${BINDIR}/${PROG}.axf: ${OBJDIR}/cpu.o ${OBJDIR}/gpio.o ${OBJDIR}/i2c.o ${OBJDIR
 SCATTERgcc_${PROG} = ${PROG}.ld
 ENTRY_${PROG} = ResetISR
 
-${BINDIR}/fs.img: ${wildcard fs/*}
+${BINDIR}/fs.img: ${wildcard fs/*} $(JS_SRCS)
+	/usr/bin/rsync -r --copy-links $(FS_DIR)/ $(FS_BUILD_DIR)/
+# OSX virtualbox shared folder have issues with some symlinks. JS_SRCS contains their canonical location
+	$(Q) $(foreach js,$(JS_SRCS), \
+		echo "CP $(js) -> $(FS_DIR)/$(basename $(notdir $(js))).$(JS_EXT)";\
+		cp $(js) $(FS_BUILD_DIR);)
 	/usr/local/bin/mkspiffs ${FW_FS_SIZE} fs > $@
+	/usr/local/bin/mkspiffs ${FW_FS_SIZE} $(OBJDIR)/fs > $@
+
+$(SMARTJS_SRC)/v7.c:
+	make -C $(V7_PATH) v7.c
+	ln -s ../../v7/v7.c $(SMARTJS_SRC)/v7.c
+
+$(OBJDIR)/v7: $(SMARTJS_SRC)/v7.c $(SMARTJS_SRC)/v7.h
+	@echo "GCC v7"
+	$(Q) gcc -DV7_EXE -DV7_EXPOSE_PRIVATE $(SMARTJS_SRC)/v7.c -lm -o $(BUILD_DIR)/v7
 
 # Target specific warning inhibitions
 

@@ -26,6 +26,7 @@
 #include <common/util/status.h>
 #include <common/util/statusor.h>
 
+#include "config.h"
 #include "fs.h"
 #include "serial.h"
 
@@ -421,15 +422,14 @@ class FlasherImpl : public Flasher {
     return util::Status(util::error::INVALID_ARGUMENT, "Unknown option");
   }
 
-  util::Status setOptionsFromCommandLine(
-      const QCommandLineParser& parser) override {
+  util::Status setOptionsFromConfig(const Config& config) override {
     util::Status r;
 
     QStringList boolOpts({kSkipIdGenerationOption, kOverwriteFSOption});
     QStringList stringOpts({kIdDomainOption, kFormatFailFS});
 
     for (const auto& opt : boolOpts) {
-      auto s = setOption(opt, parser.isSet(opt));
+      auto s = setOption(opt, config.isSet(opt));
       if (!s.ok()) {
         r = util::Status(
             s.error_code(),
@@ -438,8 +438,8 @@ class FlasherImpl : public Flasher {
     }
     for (const auto& opt : stringOpts) {
       // XXX: currently there's no way to "unset" a string option.
-      if (parser.isSet(opt)) {
-        auto s = setOption(opt, parser.value(opt));
+      if (config.isSet(opt)) {
+        auto s = setOption(opt, config.value(opt));
         if (!s.ok()) {
           r = util::Status(
               s.error_code(),
@@ -951,7 +951,7 @@ class FlasherImpl : public Flasher {
                           "Image is too short");
     }
     QDataStream meta(bytes.mid(bytes.length() - kSPIFFSMetadataSize));
-    meta.setByteOrder(QDataStream::BigEndian);
+    meta.setByteOrder(QDataStream::LittleEndian);
     quint32 fs_size;
     // See struct fs_info in platforms/cc3200/cc3200_fs_spiffs_container.c
     meta >> *seq >> fs_size >> *block_size >> *page_size;
@@ -974,15 +974,18 @@ class FlasherImpl : public Flasher {
     QByteArray meta;
     int min_seq = 0;
     QDataStream ms(&meta, QIODevice::WriteOnly);
-    ms.setByteOrder(QDataStream::BigEndian);
+    ms.setByteOrder(QDataStream::LittleEndian);
+    quint64 new_seq;
     if (seq[0] < seq[1]) {
-      ms << seq[0] - 1;
+      new_seq = seq[0] - 1;
       min_seq = 0;
     } else {
-      ms << seq[1] - 1;
+      new_seq = seq[1] - 1;
       min_seq = 1;
     }
-    ms << quint32(spiffs_image_.length());
+    qInfo() << "FS meta:" << new_seq << spiffs_image_.length()
+            << quint32(FLASH_BLOCK_SIZE) << quint32(LOG_PAGE_SIZE);
+    ms << new_seq << quint32(spiffs_image_.length());
     // TODO(imax): make mkspiffs write page size and block size into a separate
     // file and use it here instead of hardcoded values.
     ms << quint32(FLASH_BLOCK_SIZE) << quint32(LOG_PAGE_SIZE);
@@ -991,21 +994,19 @@ class FlasherImpl : public Flasher {
     QByteArray image = spiffs_image_;
     if ((fs0.ValueOrDie().length() > 0 || fs1.ValueOrDie().length() > 0) &&
         !overwrite_spiffs_) {
-      SPIFFS bundled(spiffs_image_);
-      SPIFFS dev(min_seq == 0 ? fs0.ValueOrDie() : fs1.ValueOrDie());
+      QByteArray dev = (min_seq == 0 ? fs0.ValueOrDie() : fs1.ValueOrDie());
 
-      util::Status st = dev.merge(bundled);
-      if (!st.ok()) {
-        return st;
+      auto merged = mergeFilesystems(dev, spiffs_image_);
+      if (!merged.ok()) {
+        return merged.status();
       }
-
       if (!files_.empty()) {
-        st = dev.mergeFiles(files_);
-        if (!st.ok()) {
-          return st;
+        merged = mergeFiles(merged.ValueOrDie(), files_);
+        if (!merged.ok()) {
+          return merged.status();
         }
       }
-      image = dev.data();
+      image = merged.ValueOrDie();
     }
     image.append(meta);
     QString fname = min_seq == 0 ? kFS1Filename : kFS0Filename;
@@ -1017,7 +1018,7 @@ class FlasherImpl : public Flasher {
     emit statusMessage(tr("Formatting SFLASH file system..."), true);
     QByteArray payload;
     QDataStream ps(&payload, QIODevice::WriteOnly);
-    ps.setByteOrder(QDataStream::BigEndian);
+    ps.setByteOrder(QDataStream::LittleEndian);
     ps << quint8(kOpcodeFormatFlash) << quint32(2) << quint32(size / 4)
        << quint32(0) << quint32(0) << quint32(2);
     return sendPacket(port_, payload, 10000);
@@ -1057,7 +1058,8 @@ class CC3200HAL : public HAL {
     return doBreak(s.get());
   }
 
-  std::unique_ptr<Flasher> flasher() const override {
+  std::unique_ptr<Flasher> flasher(Prompter* prompter) const override {
+    (void) prompter;  // TODO(rojer): Add prompts to flasher.
     return std::move(std::unique_ptr<Flasher>(new FlasherImpl));
   }
 
@@ -1087,11 +1089,14 @@ std::unique_ptr<::HAL> HAL() {
   return std::move(std::unique_ptr<::HAL>(new CC3200HAL));
 }
 
-void addOptions(QCommandLineParser* parser) {
-  parser->addOptions({{kFormatFailFS,
-                       "Format SFLASH file system before flashing. Accepted "
-                       "sizes: 512, 1M, 2M, 4M, 8M, 16M.",
-                       "size"}});
+void addOptions(Config* config) {
+  // QCommandLineOption supports C++11-style initialization only since Qt 5.4.
+  QList<QCommandLineOption> opts;
+  opts.append(QCommandLineOption(kFormatFailFS,
+                                 "Format SFLASH file system before flashing. "
+                                 "Accepted sizes: 512, 1M, 2M, 4M, 8M, 16M.",
+                                 "size"));
+  config->addOptions(opts);
 }
 
 }  // namespace CC3200

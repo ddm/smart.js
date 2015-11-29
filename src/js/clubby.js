@@ -8,10 +8,11 @@ var Clubby = function(arg) {
   //    src: CLIENT_ID,
   //    key: CLIENT_PASSWORD,
   //    log: BOOLEAN,
+  //    eh: EXTRA_HEADERS_STRING,    // Extra HTTP headers on WS negotiation
   //    ephemeral: BOOLEAN,          // if true do append random str to url, default true
   //    onopen: CALLBACK_OPTIONAL,   // Called when socket is connected
   //    onstart: CALLBACK_OPTIONAL,  // Called at any clubby call
-  //    onstop: CALLBACK_OPTIONAL    // Called when all clubby calls are ended
+  //    onstop: CALLBACK_OPTIONAL,   // Called when all clubby calls are ended
   //    oncmd: CALLBACK_OPTIONAL     // Called on each incoming command
   // }
 
@@ -25,6 +26,7 @@ var Clubby = function(arg) {
     map: {},        // request_id -> callback mapping
     hnd: {},        // command_id -> callback mapping
     rdy: [],        // callbacks called once as soon client is connected
+    queue: [],      // Requests to send as soon client is connected
     src: arg.src + ( arg.ephemeral && randomString || "" )
   });
 
@@ -39,18 +41,22 @@ var Clubby = function(arg) {
   var reconnect = function() {
     var url = arg.url || defaultUrl;
     log('reconnecting to [' + url + ']');
-    var ws = config.ws = new WebSocket(url, 'clubby.cesanta.com');
+    var ws = config.ws = new WebSocket(url, 'clubby.cesanta.com', config.eh);
 
     ws.onclose = function(ev) {
+      log('ws closed');
       // Schedule a reconnect after 1 second
-      setTimeout(reconnect, 1000);
       if (config.onclose) config.onclose();
+      setTimeout(reconnect, 1000);
     };
 
     ws.onopen = function(ev) {
+      log('connected');
       if (config.onopen) config.onopen();
-      $.each(config.rdy, function(i, r) { r()});
+      $.each(config.rdy, function(i, r) { r() });
       config.rdy = [];
+      $.each(config.queue, function(i, req) { me._send(req); });
+      config.queue = [];
     };
 
     // This is a non-standard callback.
@@ -60,55 +66,23 @@ var Clubby = function(arg) {
     ws.onmessage = function(ev) {
       // Dispatch responses to the correct callback
       log('received: ', ev.data);
-      var numKeys = 0, obj = JSON.parse(ev.data),  // TODO(lsm): handle parse error
-          res = {}, req = { v: 1, dst: obj.src, src: config.src,
-                            key: config.key, resp: [res] };
+      var numKeys = 0;
+      var frame;
+      try {
+        frame = JSON.parse(ev.data);
+      } catch(e) {
+        log('bad frame:', ev.data, e);
+        return;
+      }
 
-      var error = function(e) {
-        res.status = 1;
-        res.status_msg = e;
-        log("sending error", req);
-        ws.send(JSON.stringify(req));
-      };
-
-      if (obj.cmds !== undefined) {
-        $.each(obj.cmds, function(i, v) {
-          var val, h = config.hnd[v.cmd];
-          res.id = v.id;
-          delete res.resp;
-          if (h) {
-            try {
-              var done = function(val, st) {
-                var rk = "resp";
-                res.id = v.id;
-                res.status = st || 0;
-                if (st !== undefined) {
-                  rk = "status_msg";
-                }
-                res[rk] = val;
-                if (val === undefined) {
-                  delete res[rk];
-                }
-                log("sending", req);
-                me._send(req);
-              };
-
-              if (h.length > 1) {
-                h(v, done);
-              } else {
-                done(h(v));
-              }
-            } catch(e) {
-              error(JSON.stringify(e));
-            }
-          } else {
-            error("unknown command " + v.cmd);
-          }
+      if (frame.cmds !== undefined) {
+        $.each(frame.cmds, function(i, v) {
+          setTimeout(function() { handleCmd(v, frame.src) }, 0);
         });
       }
 
-      if (obj.resp !== undefined) {
-        $.each(obj.resp, function(i, v) {
+      if (frame.resp !== undefined) {
+        $.each(frame.resp, function(i, v) {
           numKeys++;
           if (v.id in config.map) {
             config.map[v.id](v);
@@ -122,6 +96,56 @@ var Clubby = function(arg) {
       }
       // TODO(lsm): cleanup old, stale callbacks from the map.
     };
+
+    function handleCmd(cmd, src) {
+      log('handling', cmd);
+      var val, h = config.hnd[cmd.cmd];
+      var res = {id: cmd.id};
+      var frame = {v: 1, dst: src, src: config.src, key: config.key, resp: [res]};
+
+      var error = function(e) {
+        res.status = 1;
+        res.status_msg = e;
+        log("sending error", frame);
+        ws.send(JSON.stringify(frame));
+      };
+
+      if (h) {
+        var done = function(val, st) {
+          var rk = "resp";
+          res.status = st || 0;
+          if (st !== undefined) {
+            rk = "status_msg";
+          }
+          res[rk] = val;
+          if (val === undefined) {
+            delete res[rk];
+          }
+          log("sending", frame);
+          me._send(frame);
+        };
+
+        if (h.length > 1) {
+          setTimeout(function(){
+            try {
+              h(cmd, done);
+            } catch(e) {
+              error(JSON.stringify(e));
+            }
+          }, 0);
+        } else {
+          setTimeout(function(){
+            try {
+              done(h(cmd));
+            } catch(e) {
+              error(JSON.stringify(e));
+            }
+          }, 0);
+        }
+      } else {
+        error("unknown command " + cmd.cmd);
+      }
+    }
   };
 
   reconnect();
@@ -174,6 +198,7 @@ Clubby.prototype.call = function(dst, cmd, callback) {
     log('call sending: ', msg);
     this._send(req);
   } else if (c.ws.readyState == WebSocket.CLOSED) {
+    c.queue.push(req);
     c.ws.close();
   } else {
     log('NOT sending:', c.ws.readyState, msg);

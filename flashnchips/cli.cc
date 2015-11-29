@@ -13,6 +13,7 @@
 #include <common/util/error_codes.h>
 
 #include "cc3200.h"
+#include "config.h"
 #include "esp8266.h"
 #include "serial.h"
 
@@ -20,9 +21,32 @@ using std::cout;
 using std::cerr;
 using std::endl;
 
-CLI::CLI(QCommandLineParser* parser, QObject* parent)
-    : QObject(parent), parser_(parser) {
+class CLIPrompterImpl : public Prompter {
+ public:
+  CLIPrompterImpl(QObject* parent) : Prompter(parent) {
+  }
+  virtual ~CLIPrompterImpl() {
+  }
+
+  int Prompt(QString text,
+             QList<QPair<QString, QMessageBox::ButtonRole>> buttons) override {
+    cout << "Prompt: " << text.toStdString() << endl;
+    cout << "CLI prompting not implemented, returning default ("
+         << buttons[0].first.toStdString() << ")" << endl;
+    return 0;
+  }
+};
+
+CLI::CLI(Config* config, QCommandLineParser* parser, QObject* parent)
+    : QObject(parent),
+      config_(config),
+      parser_(parser),
+      prompter_(new CLIPrompterImpl(this)) {
+#if (QT_VERSION < QT_VERSION_CHECK(5, 4, 0))
+  QTimer::singleShot(0, this, SLOT(run()));
+#else
   QTimer::singleShot(0, this, &CLI::run);
+#endif
 }
 
 void CLI::run() {
@@ -44,8 +68,8 @@ void CLI::run() {
   int exit_code = 0;
   int speed = 230400;
 
-  if (parser_->isSet("flash-baud-rate")) {
-    speed = parser_->value("flash-baud-rate").toInt();
+  if (config_->isSet("flash-baud-rate")) {
+    speed = config_->value("flash-baud-rate").toInt();
     if (speed == 0) {
       cerr << "Baud rate must be a number." << endl
            << endl;
@@ -87,7 +111,7 @@ void CLI::run() {
     }
   } else if (parser_->isSet("generate-id")) {
     util::Status s = generateID(parser_->value("generate-id"),
-                                parser_->value(Flasher::kIdDomainOption));
+                                config_->value(Flasher::kIdDomainOption));
     if (s.ok()) {
       cerr << "Success." << endl;
       exit_code = 0;
@@ -154,8 +178,8 @@ util::Status CLI::flash(const QString& portname, const QString& path,
     return util::Status(util::error::FAILED_PRECONDITION, "No such port");
   }
 
-  std::unique_ptr<Flasher> f(hal_->flasher());
-  util::Status config_status = f->setOptionsFromCommandLine(*parser_);
+  std::unique_ptr<Flasher> f(hal_->flasher(prompter_));
+  util::Status config_status = f->setOptionsFromConfig(*config_);
   if (!config_status.ok()) {
     return config_status;
   }

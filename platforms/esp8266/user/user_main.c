@@ -1,6 +1,7 @@
 #ifndef RTOS_SDK
 
 #include <stdio.h>
+
 #include "ets_sys.h"
 #include "osapi.h"
 #include "gpio.h"
@@ -12,7 +13,6 @@
 #include "esp_missing_includes.h"
 #include "esp_uart.h"
 #include "esp_exc.h"
-#include "v7_fs.h"
 #include "esp_uart.h"
 #include "sj_prompt.h"
 
@@ -29,10 +29,11 @@
 #include "esp_exc.h"
 #include "sj_prompt.h"
 #include "util.h"
-#include "v7_fs.h"
 #include "disp_task.h"
 
 #endif /* RTOS_SDK */
+
+#include "esp_fs.h"
 
 #ifndef RTOS_SDK
 os_timer_t startcmd_timer;
@@ -40,7 +41,7 @@ os_timer_t startcmd_timer;
 
 void start_cmd(void *dummy) {
 #ifndef V7_NO_FS
-  fs_init();
+  fs_init(FS_ADDR, FS_SIZE);
 #endif
 
   init_v7(&dummy);
@@ -76,6 +77,7 @@ void init_done_cb() {
 /* Init function */
 void user_init() {
 #ifndef RTOS_TODO
+  system_update_cpu_freq(SYS_CPU_160MHZ);
   system_init_done_cb(init_done_cb);
 #endif
 

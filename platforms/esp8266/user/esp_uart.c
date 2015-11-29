@@ -1,6 +1,6 @@
 #include <stdarg.h>
 #include <ets_sys.h>
-#include <v7.h>
+#include <string.h>
 
 #include "esp_missing_includes.h"
 #include "esp_uart.h"
@@ -26,10 +26,6 @@
 
 #endif /* RTOS_SDK */
 
-/* At this moment using uart #0 only */
-#define UART_MAIN 0
-#define UART_DEBUG 1
-
 #define UART_BASE(i) (0x60000000 + (i) *0xf00)
 #define UART_INTR_STATUS(i) (UART_BASE(i) + 0x8)
 #define UART_FORMAT_ERROR (BIT(3))
@@ -41,6 +37,10 @@
 #define UART_DATA_STATUS(i) (UART_BASE(i) + 0x1C)
 #define UART_BUF(i) UART_BASE(i)
 #define UART_CONF_TX(i) (UART_BASE(i) + 0x20)
+
+#define UART_MAIN 0
+#define UART_DEBUG 1
+
 #define TASK_PRIORITY 0
 #define RXTASK_QUEUE_LEN 10
 #define RX_BUFFER_SIZE 0x100
@@ -60,6 +60,15 @@ static os_event_t rx_task_queue[RXTASK_QUEUE_LEN];
 static char rx_buf[RX_BUFFER_SIZE];
 static unsigned s_system_uartno = UART_MAIN;
 static unsigned debug_enabled = 0;
+static uart_process_char_t s_custom_callback;
+
+int rx_fifo_len(int uart_no) {
+  return READ_PERI_REG(UART_DATA_STATUS(uart_no)) & 0xff;
+}
+
+int tx_fifo_len(int uart_no) {
+  return (READ_PERI_REG(UART_DATA_STATUS(uart_no)) >> 16) & 0xff;
+}
 
 FAST static void rx_isr(void *param) {
   /* TODO(alashkin): add errors checking */
@@ -75,27 +84,35 @@ FAST static void rx_isr(void *param) {
     char_count = READ_PERI_REG(UART_DATA_STATUS(UART_MAIN)) & 0x000000FF;
 
     /* TODO(mkm): handle overrun */
-    for (i = 0; i < char_count; i++, tail = (tail + 1) % RX_BUFFER_SIZE) {
-      rx_buf[tail] = READ_PERI_REG(UART_BUF(UART_MAIN)) & 0xFF;
-      if (rx_buf[tail] == UART_SIGINT_CHAR && uart_interrupt_cb) {
-        /* swallow the intr byte */
-        tail = (tail - 1) % RX_BUFFER_SIZE;
-        uart_interrupt_cb(UART_SIGINT_CHAR);
+    for (i = 0; i < char_count; i++) {
+      char ch = READ_PERI_REG(UART_BUF(UART_MAIN)) & 0xFF;
+      if (s_custom_callback != NULL) {
+        s_custom_callback(ch);
+      } else {
+        rx_buf[tail] = ch;
+        if (rx_buf[tail] == UART_SIGINT_CHAR && uart_interrupt_cb) {
+          /* swallow the intr byte */
+          tail = (tail - 1) % RX_BUFFER_SIZE;
+          uart_interrupt_cb(UART_SIGINT_CHAR);
+        }
+        tail = (tail + 1) % RX_BUFFER_SIZE;
       }
     }
 
     WRITE_PERI_REG(UART_CLEAR_INTR(UART_MAIN), UART_RXBUF_FULL | UART_RX_NEW);
     SET_PERI_REG_MASK(UART_CTRL_INTR(UART_MAIN), UART_RXBUF_FULL | UART_RX_NEW);
 
+    if (s_custom_callback == NULL) {
 #ifndef RTOS_SDK
-    system_os_post(TASK_PRIORITY, 0, tail);
+      system_os_post(TASK_PRIORITY, 0, tail);
 #else
-    rtos_dispatch_char_handler(tail);
+      rtos_dispatch_char_handler(tail);
 #endif
+    }
   }
 }
 
-static int blocking_read_uart_buf(char *buf) {
+int blocking_read_uart_buf(char *buf) {
   unsigned int peri_reg = READ_PERI_REG(UART_INTR_STATUS(UART_MAIN));
 
   if ((peri_reg & UART_RXBUF_FULL) != 0 || (peri_reg & UART_RX_NEW) != 0) {
@@ -112,6 +129,7 @@ static int blocking_read_uart_buf(char *buf) {
 
     WRITE_PERI_REG(UART_CLEAR_INTR(UART_MAIN), UART_RXBUF_FULL | UART_RX_NEW);
     SET_PERI_REG_MASK(UART_CTRL_INTR(UART_MAIN), UART_RXBUF_FULL | UART_RX_NEW);
+
     return char_count;
   }
   return 0;
@@ -130,12 +148,7 @@ int blocking_read_uart() {
 }
 
 void uart_tx_char(unsigned uartno, char ch) {
-  while (1) {
-    uint32 fifo_cnt =
-        (READ_PERI_REG(UART_DATA_STATUS(uartno)) & 0x00FF0000) >> 16;
-    if (fifo_cnt < 126) {
-      break;
-    }
+  while (tx_fifo_len(uartno) > 126) {
   }
   WRITE_PERI_REG(UART_BUF(uartno), ch);
 }
@@ -226,6 +239,18 @@ int uart_redirect_debug(int mode) {
 #endif
 
   return 0;
+}
+
+void uart_set_custom_callback(uart_process_char_t cb) {
+  s_custom_callback = cb;
+
+#ifndef RTOS_SDK
+  ETS_UART_INTR_ATTACH(rx_isr, 0);
+  ETS_INTR_ENABLE(ETS_UART_INUM);
+#else
+  _xt_isr_attach(ETS_UART_INUM, rx_isr, 0);
+  _xt_isr_unmask(1 << ETS_UART_INUM);
+#endif
 }
 
 void uart_debug_init(unsigned periph, unsigned baud_rate) {

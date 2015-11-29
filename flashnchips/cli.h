@@ -9,14 +9,16 @@
 #include <common/util/status.h>
 
 #include "hal.h"
+#include "prompter.h"
 
+class Config;
 class QCommandLineParser;
 
 class CLI : public QObject {
   Q_OBJECT
 
  public:
-  CLI(QCommandLineParser* parser, QObject* parent = 0);
+  CLI(Config* config, QCommandLineParser* parser, QObject* parent = 0);
 
  private:
   void listPorts();
@@ -25,8 +27,10 @@ class CLI : public QObject {
   util::Status generateID(const QString& filename, const QString& domain);
   void run();
 
-  QCommandLineParser* parser_;
+  Config* config_ = nullptr;
+  QCommandLineParser* parser_ = nullptr;
   std::unique_ptr<HAL> hal_;
+  Prompter* prompter_;
 };
 
 #endif  // CLI_H

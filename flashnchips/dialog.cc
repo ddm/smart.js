@@ -13,6 +13,7 @@
 #include <QFontDatabase>
 #include <QFormLayout>
 #include <QMessageBox>
+#include <QMutex>
 #include <QScrollBar>
 #include <QSerialPort>
 #include <QSerialPortInfo>
@@ -20,9 +21,11 @@
 #include <QTextCursor>
 #include <QThread>
 #include <QTimer>
+#include <QWaitCondition>
 #include <QUrl>
 
 #include "cc3200.h"
+#include "config.h"
 #include "esp8266.h"
 #include "flasher.h"
 #include "serial.h"
@@ -41,8 +44,42 @@ const int kDefaultConsoleBaudRate = 115200;
 
 }  // namespace
 
-MainDialog::MainDialog(QCommandLineParser* parser, QWidget* parent)
-    : QMainWindow(parent), parser_(parser) {
+class PrompterImpl : public Prompter {
+  Q_OBJECT
+ public:
+  PrompterImpl(QObject* parent) : Prompter(parent) {
+  }
+  virtual ~PrompterImpl() {
+  }
+
+  int Prompt(QString text,
+             QList<QPair<QString, QMessageBox::ButtonRole>> buttons) override {
+    QMutexLocker l(&lock_);
+    emit showPrompt(text, buttons);
+    wc_.wait(&lock_);
+    return clicked_button_;
+  }
+
+signals:
+  void showPrompt(QString text,
+                  QList<QPair<QString, QMessageBox::ButtonRole>> buttons);
+
+ public slots:
+
+  void showPromptResult(int clicked_button) {
+    QMutexLocker l(&lock_);
+    clicked_button_ = clicked_button;
+    wc_.wakeOne();
+  }
+
+ private:
+  QMutex lock_;
+  QWaitCondition wc_;
+  int clicked_button_;
+};
+
+MainDialog::MainDialog(Config* config, QWidget* parent)
+    : QMainWindow(parent), config_(config) {
   ui_.setupUi(this);
 
   fwDir_ = QDir(QApplication::applicationDirPath());
@@ -62,11 +99,20 @@ MainDialog::MainDialog(QCommandLineParser* parser, QWidget* parent)
   restoreState(settings_.value("window/state").toByteArray());
   skip_detect_warning_ = settings_.value("skipDetectWarning", false).toBool();
 
+#if (QT_VERSION < QT_VERSION_CHECK(5, 4, 0))
+  connect(this, &MainDialog::updatePlatformSelector, ui_.platformSelector,
+          &QComboBox::setCurrentIndex, Qt::QueuedConnection);
+#endif
+
   QString p = settings_.value("selectedPlatform", "ESP8266").toString();
   for (int i = 0; i < ui_.platformSelector->count(); i++) {
     if (p == ui_.platformSelector->itemText(i)) {
+#if (QT_VERSION < QT_VERSION_CHECK(5, 4, 0))
+      emit updatePlatformSelector(i);
+#else
       QTimer::singleShot(
           0, [this, i]() { ui_.platformSelector->setCurrentIndex(i); });
+#endif
       break;
     }
   }
@@ -99,11 +145,17 @@ MainDialog::MainDialog(QCommandLineParser* parser, QWidget* parent)
   enabled_in_state_.insert(ui_.rebootBtn, Connected);
   enabled_in_state_.insert(ui_.rebootBtn, Terminal);
   enabled_in_state_.insert(ui_.terminalInput, Terminal);
+  enabled_in_state_.insert(ui_.uploadBtn, Terminal);
 
   enableControlsForCurrentState();
 
+#if (QT_VERSION < QT_VERSION_CHECK(5, 4, 0))
+  QTimer::singleShot(0, this, SLOT(updatePortList()));
+  QTimer::singleShot(0, this, SLOT(updateFWList()));
+#else
   QTimer::singleShot(0, this, &MainDialog::updatePortList);
   QTimer::singleShot(0, this, &MainDialog::updateFWList);
+#endif
   refresh_timer_ = new QTimer(this);
   refresh_timer_->start(500);
   connect(refresh_timer_, &QTimer::timeout, this, &MainDialog::updatePortList);
@@ -150,6 +202,8 @@ MainDialog::MainDialog(QCommandLineParser* parser, QWidget* parent)
   connect(ui_.actionUpload_a_file, &QAction::triggered, this,
           &MainDialog::uploadFile);
 
+  connect(ui_.uploadBtn, &QPushButton::clicked, this, &MainDialog::uploadFile);
+
   connect(ui_.terminalInput, &QLineEdit::returnPressed, this,
           &MainDialog::writeSerial);
 
@@ -184,14 +238,19 @@ MainDialog::MainDialog(QCommandLineParser* parser, QWidget* parent)
   connect(ui_.actionAbout, &QAction::triggered, this,
           &MainDialog::showAboutBox);
 
-  if (parser_->isSet("console-log")) {
-    console_log_.reset(new QFile(parser_->value("console-log")));
+  if (config_->isSet("console-log")) {
+    console_log_.reset(new QFile(config_->value("console-log")));
     if (!console_log_->open(QIODevice::ReadWrite | QIODevice::Append)) {
       qCritical() << "Failed to open console log file:"
                   << console_log_->errorString();
       console_log_->reset();
     }
   }
+
+  prompter_ = new PrompterImpl(this);
+  connect(prompter_, &PrompterImpl::showPrompt, this, &MainDialog::showPrompt);
+  connect(this, &MainDialog::showPromptResult, prompter_,
+          &PrompterImpl::showPromptResult);
 }
 
 void MainDialog::setState(State newState) {
@@ -235,7 +294,26 @@ void MainDialog::resetHAL(QString name) {
   } else {
     qFatal("Unknown platform: %s", name.toStdString().c_str());
   }
+#if (QT_VERSION < QT_VERSION_CHECK(5, 4, 0))
+  QTimer::singleShot(0, this, SLOT(updateFWList()));
+#else
   QTimer::singleShot(0, this, &MainDialog::updateFWList);
+#endif
+}
+
+void MainDialog::showPrompt(
+    QString text, QList<QPair<QString, QMessageBox::ButtonRole>> buttons) {
+  QMessageBox mb;
+  mb.setText(text);
+  QMap<QAbstractButton*, int> b2i;
+  int i = 0;
+  for (const auto& bd : buttons) {
+    QAbstractButton* b = mb.addButton(bd.first, bd.second);
+    b2i[b] = i++;
+  }
+  mb.exec();
+  QAbstractButton* clicked = mb.clickedButton();
+  emit showPromptResult(b2i.contains(clicked) ? b2i[clicked] : -1);
 }
 
 util::Status MainDialog::openSerial() {
@@ -259,7 +337,11 @@ util::Status MainDialog::openSerial() {
               &QSerialPort::error),
           [this](QSerialPort::SerialPortError err) {
             if (err == QSerialPort::ResourceError) {
+#if (QT_VERSION < QT_VERSION_CHECK(5, 4, 0))
+              QTimer::singleShot(0, this, SLOT(closeSerial()));
+#else
               QTimer::singleShot(0, this, &MainDialog::closeSerial);
+#endif
             }
           });
 
@@ -316,11 +398,11 @@ void MainDialog::connectDisconnectTerminal() {
               &MainDialog::readSerial);
 
       speed = kDefaultConsoleBaudRate;
-      if (parser_->isSet("console-baud-rate")) {
-        speed = parser_->value("console-baud-rate").toInt();
+      if (config_->isSet("console-baud-rate")) {
+        speed = config_->value("console-baud-rate").toInt();
         if (speed == 0) {
           qDebug() << "Invalid --console-baud-rate value:"
-                   << parser_->value("console-baud-rate");
+                   << config_->value("console-baud-rate");
           speed = kDefaultConsoleBaudRate;
         }
       }
@@ -594,6 +676,7 @@ void MainDialog::loadFirmware() {
                                              "", QFileDialog::ShowDirsOnly);
     if (path.isEmpty()) {
       ui_.statusMessage->setText(tr("No firmware selected"));
+      ui_.statusMessage->show();
       return;
     }
   }
@@ -601,14 +684,18 @@ void MainDialog::loadFirmware() {
   if (portName == "") {
     ui_.statusMessage->setText(tr("No port selected"));
   }
-  std::unique_ptr<Flasher> f(hal_->flasher());
-  util::Status s = f->setOptionsFromCommandLine(*parser_);
+  std::unique_ptr<Flasher> f(hal_->flasher(prompter_));
+  util::Status s = f->setOptionsFromConfig(*config_);
   if (!s.ok()) {
-    qWarning() << "Some options have invalid values:" << s.ToString().c_str();
+    ui_.statusMessage->setText(tr("Invalid command line flag setting: ") +
+                               s.ToString().c_str());
+    ui_.statusMessage->show();
+    return;
   }
   util::Status err = f->load(path);
   if (!err.ok()) {
     ui_.statusMessage->setText(err.error_message().c_str());
+    ui_.statusMessage->show();
     return;
   }
   if (state_ == Terminal) {
@@ -658,7 +745,11 @@ void MainDialog::loadFirmware() {
   f->moveToThread(worker_.get());
   serial_port_->moveToThread(worker_.get());
   worker_->start();
+#if (QT_VERSION < QT_VERSION_CHECK(5, 4, 0))
+  QTimer::singleShot(0, f.get(), SLOT(run()));
+#else
   QTimer::singleShot(0, f.get(), &Flasher::run);
+#endif
   f.release();
 }
 
@@ -798,3 +889,5 @@ void MainDialog::sendQueuedCommand() {
   serial_port_->write(cmd.toUtf8());
   serial_port_->write("\r\n");
 }
+
+#include "dialog.moc"

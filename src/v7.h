@@ -62,8 +62,11 @@ typedef uint64_t v7_val_t;
 extern "C" {
 #endif /* __cplusplus */
 
-struct v7; /* Opaque structure. V7 engine handler. */
-typedef v7_val_t (*v7_cfunction_t)(struct v7 *, v7_val_t, v7_val_t);
+/* Opaque structure. V7 engine handler. */
+struct v7;
+
+/* JavaScript -> C call interface */
+typedef v7_val_t (*v7_cfunction_t)(struct v7 *);
 
 /* Create V7 instance */
 struct v7 *v7_create(void);
@@ -87,7 +90,8 @@ enum v7_err {
   V7_EXEC_EXCEPTION,
   V7_STACK_OVERFLOW,
   V7_AST_TOO_LARGE,
-  V7_INVALID_ARG
+  V7_INVALID_ARG,
+  V7_INTERNAL_ERROR,
 };
 
 /*
@@ -249,7 +253,8 @@ v7_cfunction_t v7_to_cfunction(v7_val_t);
 
 /*
  * Return pointer to string stored in `v7_val_t`.
- * String length returned in `string_len`. Returned string pointer is
+ * String length returned in `string_len`. For all strings owned by V7
+ * engine, returned string pointer is
  * guaranteed to be 0-terminated, suitable for standard C library string API.
  *
  * CAUTION: creating new JavaScript object, array, or string may kick in a
@@ -264,6 +269,15 @@ v7_val_t v7_get_global(struct v7 *);
 /* Return current `this` object. */
 v7_val_t v7_get_this(struct v7 *);
 
+/* Return current `arguments` array */
+v7_val_t v7_get_arguments(struct v7 *);
+
+/* Return n-th argument */
+v7_val_t v7_arg(struct v7 *, unsigned long n);
+
+/* Return the length of `arguments` */
+unsigned long v7_argc(struct v7 *);
+
 /*
  * Lookup property `name`, `len` in object `obj`. If `obj` holds no such
  * property, an `undefined` value is returned.
@@ -271,22 +285,32 @@ v7_val_t v7_get_this(struct v7 *);
 v7_val_t v7_get(struct v7 *v7, v7_val_t obj, const char *name, size_t len);
 
 /*
- * Generate JSON representation of the JavaScript value `val` into a buffer
- * `buf`, `buf_len`. If `buf_len` is too small to hold generated JSON string,
- * `v7_to_json()` allocates required memory. In that case, it is caller's
- * responsibility to free the allocated buffer. Generated JSON string is
+ * Generate string representation of the JavaScript value `val` into a buffer
+ * `buf`, `len`. If `len` is too small to hold generated a string,
+ * `v7_stringify()` allocates required memory. In that case, it is caller's
+ * responsibility to free the allocated buffer. Generated string is
  * guaranteed to be 0-terminated.
+ * Stringifying as JSON will produce JSON output.
+ * Debug stringification is mostly like JSON, but will not omit non-JSON
+ * objects like functions.
  *
  * Example code:
  *
  *     char buf[100], *p;
- *     p = v7_to_json(v7, obj, buf, sizeof(buf));
+ *     p = v7_stringify(v7, obj, buf, sizeof(buf), 1);
  *     printf("JSON string: [%s]\n", p);
  *     if (p != buf) {
  *       free(p);
  *     }
  */
-char *v7_to_json(struct v7 *, v7_val_t val, char *buf, size_t buf_len);
+enum v7_stringify_flags {
+  V7_STRINGIFY_DEFAULT = 0,
+  V7_STRINGIFY_JSON = 1,
+  V7_STRINGIFY_DEBUG = 2,
+};
+char *v7_stringify(struct v7 *, v7_val_t v, char *buf, size_t len,
+                   enum v7_stringify_flags flags);
+#define v7_to_json(a, b, c, d) v7_stringify(a, b, c, d, V7_STRINGIFY_JSON)
 
 /* print a value to stdout */
 void v7_print(struct v7 *, v7_val_t val);
@@ -346,6 +370,9 @@ unsigned long v7_array_length(struct v7 *v7, v7_val_t arr);
 /* Insert value `v` in array `arr` at index `index`. */
 int v7_array_set(struct v7 *v7, v7_val_t arr, unsigned long index, v7_val_t v);
 
+/* Delete value in array `arr` at index `index`, if it exists. */
+void v7_array_del(struct v7 *v7, v7_val_t arr, unsigned long index);
+
 /* Insert value `v` in array `arr` at the end of the array. */
 int v7_array_push(struct v7 *, v7_val_t arr, v7_val_t v);
 
@@ -357,6 +384,21 @@ v7_val_t v7_array_get(struct v7 *, v7_val_t arr, unsigned long index);
 
 /* Set object's prototype. Return old prototype or undefined on error. */
 v7_val_t v7_set_proto(v7_val_t obj, v7_val_t proto);
+
+/*
+ * Iterate over the object's `obj` properties.
+ *
+ * Usage example:
+ *
+ *     void *h = NULL;
+ *     v7_val_t name, val;
+ *     unsigned int attrs;
+ *     while ((h = v7_next_prop(h, obj, &name, &val, &attrs)) != NULL) {
+ *       ...
+ *     }
+ */
+void *v7_next_prop(void *handle, v7_val_t obj, v7_val_t *name, v7_val_t *value,
+                   unsigned int *attrs);
 
 /* Returns last parser error message. */
 const char *v7_get_parser_error(struct v7 *v7);
@@ -376,13 +418,30 @@ enum v7_heap_stat_what {
   V7_HEAP_STAT_PROP_HEAP_FREE,
   V7_HEAP_STAT_PROP_HEAP_CELL_SIZE,
   V7_HEAP_STAT_FUNC_AST_SIZE,
+#ifdef V7_ENABLE_BCODE
+  V7_HEAP_STAT_FUNC_BCODE_SIZE,
+#endif
   V7_HEAP_STAT_FUNC_OWNED,
   V7_HEAP_STAT_FUNC_OWNED_MAX
+};
+
+enum v7_stack_stat_what {
+  /* max stack size consumed by `i_exec()` */
+  V7_STACK_STAT_EXEC,
+  /* max stack size consumed by `parse()` (which is called from `i_exec()`) */
+  V7_STACK_STAT_PARSER,
+
+  V7_STACK_STATS_CNT
 };
 
 #if V7_ENABLE__Memory__stats
 /* Returns a given heap statistics */
 int v7_heap_stat(struct v7 *v7, enum v7_heap_stat_what what);
+#endif
+
+#if defined(V7_ENABLE_STACK_TRACKING)
+int v7_stack_stat(struct v7 *v7, enum v7_stack_stat_what what);
+void v7_stack_stat_clean(struct v7 *v7);
 #endif
 
 /*
@@ -439,6 +498,11 @@ void v7_fprintln(FILE *f, struct v7 *v7, v7_val_t v);
 
 int v7_main(int argc, char *argv[], void (*init_func)(struct v7 *),
             void (*fini_func)(struct v7 *));
+
+#ifdef V7_STACK_SIZE
+/* Returns lowest recorded available stack size. */
+int v7_get_stack_avail_lwm(struct v7 *v7);
+#endif
 
 #ifdef __cplusplus
 }

@@ -5,18 +5,26 @@
 #include <ets_sys.h>
 #include <xtensa/corebits.h>
 #include <stdint.h>
-#include "esp_gdb.h"
+#ifdef RTOS_SDK
+#include <espressif/esp_system.h>
+#endif
+
 #include "esp_exc.h"
-#include "v7_esp_hw.h"
-#include "esp_uart.h"
+#include "esp_gdb.h"
+#include "esp_hw.h"
 #include "esp_missing_includes.h"
+#include "esp_uart.h"
 #include "v7_esp.h"
+
 #include "base64.h"
 
 #define ESP_COREDUMP_UART_NO 1
 #define ESP_COREDUMP_FILENO (ESP_COREDUMP_UART_NO + 1)
 
 /* output an unsigned decimal integer */
+static void uart_putdec(int fd, unsigned int n)
+    __attribute__((no_instrument_function));
+
 static void uart_putdec(int fd, unsigned int n) {
   unsigned int tmp;
   unsigned long long p = 1;
@@ -34,12 +42,23 @@ static void uart_putdec(int fd, unsigned int n) {
   }
 }
 
+static uint32_t last_char_ts = 0;
 static int core_dump_emit_char_fd = 0;
+static void core_dump_emit_char(char c, void *user_data)
+    __attribute__((no_instrument_function));
+
 static void core_dump_emit_char(char c, void *user_data) {
   int *col_counter = (int *) user_data;
 #ifdef RTOS_SDK
   system_soft_wdt_feed();
 #endif
+  /* Since we have may have no flow control on dbg uart, limit the speed
+   * the we emit the chars at. It's important to deliver core dumps intact. */
+  uint32_t now;
+  do {
+    now = system_get_time();
+  } while (now > last_char_ts /* handle overflow */ &&
+           now - last_char_ts < 100 /* Char time @ 115200 is 70 us */);
   (*col_counter)++;
   uart_putchar(core_dump_emit_char_fd, c);
   if (*col_counter >= 160) {
@@ -49,6 +68,10 @@ static void core_dump_emit_char(char c, void *user_data) {
 }
 
 /* address must be aligned to 4 and size must be multiple of 4 */
+static void emit_core_dump_section(int fd, const char *name, uint32_t addr,
+                                   uint32_t size)
+    __attribute__((no_instrument_function));
+
 static void emit_core_dump_section(int fd, const char *name, uint32_t addr,
                                    uint32_t size) {
   struct cs_base64_ctx ctx;
@@ -71,6 +94,9 @@ static void emit_core_dump_section(int fd, const char *name, uint32_t addr,
   cs_base64_finish(&ctx);
   uart_puts(fd, "\"}");
 }
+
+void esp_dump_core(int fd, struct regfile *regs)
+    __attribute__((no_instrument_function));
 
 void esp_dump_core(int fd, struct regfile *regs) {
   if (fd == -1) {

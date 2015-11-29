@@ -1,4 +1,5 @@
 SRC_PATH ?= ../../src
+V7_PATH ?= ../../../v7
 BIN_DIR ?= ./bin
 BUILD_DIR ?= ./build
 OUTAPP ?= smartjs
@@ -8,16 +9,16 @@ SSL ?= OpenSSL
 V7_FEATURES = -DV7_BUILD_PROFILE=3 -DV7_ENABLE__Memory__stats \
 			  -DV7_ENABLE_COMPACTING_GC \
 			  -DV7_ENABLE_FILE -DV7_MAIN -DV7_ALLOW_ARGLESS_MAIN \
-			  -DMG_ENABLE_THREADS -DSJ_PROMPT_DISABLE_ECHO -DV7_ENABLE__StackTrace \
+			  -DMG_ENABLE_THREADS -DSJ_PROMPT_DISABLE_ECHO \
 			  -DCS_ENABLE_UBJSON -DV7_ENABLE_UBJSON
 SJ_FEATURES =
-MONGOOSE_FEATURES =
+MONGOOSE_FEATURES = -DMG_USE_READ_WRITE
 
 INCLUDES = $(SRC_PATH)
 APP_SRCS := $(notdir $(wildcard *.c)) v7.c sj_v7_ext.c \
-			sj_simple_http.c mongoose.c sj_i2c_js.c sj_spi_js.c sj_mongoose.c \
-			sj_mongoose_http_client.c sj_mongoose_ws_client.c sj_gpio_js.c \
-			sj_prompt.c sj_timers.c
+			mongoose.c sj_i2c_js.c sj_spi_js.c sj_mongoose.c \
+			sj_mongoose_ws_client.c sj_gpio_js.c \
+			sj_prompt.c sj_timers.c sj_uart.c sj_http.c
 
 # inline causes crashes in the compacting GC
 # TODO(mkm) figure out which functions are inline sensitive and annotate them
@@ -53,7 +54,7 @@ endif
 # Non Windows
 ifneq ($(PLATFORM), "WIN")
   ADD_LIBS += m pthread
-  V7_FEATURES += -DDISABLE_MD5
+  V7_FEATURES += -DCS_ENABLE_NATIVE_MD5  # Mongoose uses cs_md5
 endif
 
 # Linux
@@ -124,6 +125,10 @@ $(BUILD_DIR)/sj_version.c: $(APP_SRCS)
 	echo "const char *sj_version = \"POSIX-$$REF/$$DATE/$$SHA\";" > $(BUILD_DIR)/sj_version.c
 
 -include $(wildcard $(BUILD_DIR)/*.d)
+
+$(SRC_PATH)/v7.c:
+	@make -C $(V7_PATH) v7.c
+	@ln -s ../../v7/v7.c $(SRC_PATH)/v7.c
 
 $(BIN_DIR)/$(OUTAPP): $(OBJS)
 	@echo "LD $@"

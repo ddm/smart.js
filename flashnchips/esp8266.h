@@ -10,23 +10,17 @@
 
 #include "hal.h"
 
-class QCommandLineParser;
+class Config;
 
 namespace ESP8266 {
 
 util::StatusOr<int> flashParamsFromString(const QString& s);
 
-void addOptions(QCommandLineParser* parser);
+void addOptions(Config* parser);
 
 QByteArray makeIDBlock(const QString& domain);
 
 std::unique_ptr<HAL> HAL();
-
-extern const char kFlashParamsOption[];
-extern const char kDisableEraseWorkaroundOption[];
-extern const char kSkipReadingFlashParamsOption[];
-extern const char kFlashingDataPort[];
-extern const char kInvertDTRRTS[];
 
 }  // namespace ESP8266
 
