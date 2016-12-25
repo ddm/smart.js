@@ -1,0 +1,472 @@
+# -*- mode: makefile -*-
+#
+# Mongoose IoT for ESP8266
+#
+# GC_DEBUG: if "true" (default) enables string ASN checks
+# STACK_GUARD: if "true" (default) enables soft stack guard
+# SSL: chooses SSL library to use. Currently onle "mbedTLS" is supported
+# HEAP_LOG: if "1", compiles ESP firmware with heap logging feature: there are
+#           logging wrappers for malloc and friends. You can later view heap
+#           map by `tools/heaplog_viewer/heaplog_viewer.html`
+#
+MAKEFLAGS += --warn-undefined-variables
+.DEFAULT_GOAL := all
+
+APP ?= mongoose-iot
+APP_PLATFORM = esp8266
+APP_MODULES ?=
+APP_CFLAGS ?=
+APP_FS_PATH ?=
+APP_EXTRA_SRCS ?=
+
+MIOT_ENABLE_JS = 0
+MIOT_ENABLE_UPDATER_RPC = 0
+MIOT_DEBUG_UART = 0
+
+MIOT_PATH ?= ../../..
+COMMON_PATH ?= $(MIOT_PATH)/common
+MONGOOSE_PATH ?= $(MIOT_PATH)/mongoose
+FROZEN_PATH ?= $(MIOT_PATH)/frozen
+V7_PATH ?= $(MIOT_PATH)/v7
+
+COMMON_ESP_PATH ?= $(COMMON_PATH)/platforms/esp8266
+MIOT_ESP_PATH ?= $(MIOT_PATH)/fw/platforms/esp8266
+MIOT_SRC_PATH ?= $(MIOT_PATH)/fw/src
+MBEDTLS_PATH ?= /opt/mbedtls
+SPIFFS_PATH ?= $(COMMON_PATH)/spiffs
+UMM_MALLOC_PATH ?= $(COMMON_PATH)/umm_malloc
+MIOT_JS_PATH ?= $(MIOT_SRC_PATH)/js
+COMMON_FS_PATH ?= $(MIOT_PATH)/fw/skeleton/fs
+LWIP_PATH ?= $(COMMON_ESP_PATH)/lwip
+BOOTLOADER_PATH ?= $(COMMON_ESP_PATH)/rboot
+ESPTOOL2 = $(BUILD_DIR)/esptool2
+# Enable heap allocation logging - every malloc/free is logged.
+MIOT_ENABLE_HEAP_LOG ?= 0
+# In addition to logging allocations, print call traces for them.
+# This instruments every function and increases code size significantly.
+MIOT_ENABLE_CALL_TRACE ?= 0
+
+CREATE_SPIFFS_FS ?= 1
+CREATE_RAW_FS ?= 0
+
+FLASH_SIZE ?= 4M
+FS_SIZE ?= 128K
+FS_BLOCK_SIZE = 4096
+FS_PAGE_SIZE = 256
+FS_ERASE_SIZE = 4096
+
+RF_CAL_DATA_SIZE = 0x1000
+SYS_PARAMS_SIZE = 0x4000
+
+FW_FILE_1_ADDR = 0
+FW_FILE_2_ADDR = 0x11000
+FW2_FILE_2_ADDR=$(shell printf "0x%08x" $$(($(FW_FILE_2_ADDR) + 0x100000)))
+
+BUILD_DIR ?= $(CURDIR)/.build
+FW_STAGING_DIR ?= $(BUILD_DIR)/fw_temp
+FW_DIR ?= $(CURDIR)/firmware
+GEN_DIR ?= $(BUILD_DIR)/gen
+
+# Absolutize all paths which can be given by the caller
+override BUILD_DIR := $(abspath $(BUILD_DIR))
+override FW_STAGING_DIR := $(abspath $(FW_STAGING_DIR))
+override FW_DIR := $(abspath $(FW_DIR))
+override GEN_DIR := $(abspath $(GEN_DIR))
+
+LWIP_BUILD_DIR = $(BUILD_DIR)/lwip
+
+FS_STAGING_DIR = $(BUILD_DIR)/fs
+RBOOT_FW_NAME = 0x00000.bin
+FW_SECTS = .text .data .rodata
+FW_USER_ARGS  = -quiet -bin -boot2
+
+# SSL can be None or mbedTLS
+SSL ?= mbedTLS
+
+include $(COMMON_ESP_PATH)/common.mk
+
+# For FW_VERSION, COMMON_V7_FEATURES, MG_FEATURES_TINY
+include $(MIOT_PATH)/fw/common.mk
+
+MIOT_ESP_SRC_PATH = $(MIOT_ESP_PATH)/user
+
+MIOT_SRCS = cs_rbuf.c \
+            miot_config.c \
+            miot_gpio.c \
+            miot_init.c \
+            miot_timers_mongoose.c \
+            miot_wifi.c \
+            miot_mongoose.c \
+            miot_sys_config.c $(notdir $(SYS_CONFIG_C)) $(notdir $(SYS_RO_VARS_C)) \
+            miot_uart.c \
+            miot_utils.c \
+            cs_crc32.c \
+            rboot-bigflash.c rboot-api.c \
+            json_utils.c \
+            umm_malloc.c \
+            mongoose.c frozen.c
+MIOT_SRCS += $(notdir $(foreach m,$(MIOT_ESP_SRC_PATH) $(SPIFFS_PATH) $(COMMON_ESP_PATH),$(wildcard $(m)/*.c)))
+APP_SRCS := $(notdir $(foreach m,$(APP_MODULES),$(wildcard $(m)/*.c))) $(APP_EXTRA_SRCS)
+
+ifeq "$(MIOT_ENABLE_JS)" "1"
+MIOT_SRCS += v7.c \
+             miot_v7_ext.c \
+             miot_prompt.c
+endif
+
+MIOT_FEATURES ?= -DMIOT_ENABLE_ADC_API \
+                -DMIOT_ENABLE_DEBUG_API \
+                -DMIOT_ENABLE_GPIO_API \
+                -DMIOT_ENABLE_HTTP_CLIENT_API \
+                -DMIOT_ENABLE_HTTP_SERVER_API \
+                -DMIOT_ENABLE_I2C_API \
+                -DMIOT_ENABLE_MQTT_API \
+                -DMIOT_ENABLE_PWM_API \
+                -DMIOT_ENABLE_SPI_API \
+                -DMIOT_ENABLE_TCP_API \
+                -DMIOT_ENABLE_UART_API \
+                -DMIOT_ENABLE_UDP_API \
+                -DMIOT_ENABLE_WIFI_API \
+                -DMIOT_ENABLE_WS_CLIENT_API
+
+MIOT_ENABLE_I2C_GPIO = 1
+
+include $(MIOT_PATH)/fw/src/features.mk
+
+ifeq "$(MIOT_ENABLE_I2C)" "1"
+  SYS_CONF_SCHEMA += $(MIOT_ESP_SRC_PATH)/esp_i2c_config.yaml
+endif
+ifeq "$(MIOT_ENABLE_WIFI)" "1"
+  SYS_CONF_SCHEMA += $(MIOT_ESP_SRC_PATH)/esp_wifi_config.yaml
+endif
+
+VPATH = $(APP_MODULES) $(MIOT_SRC_PATH) $(MONGOOSE_PATH) \
+        $(FROZEN_PATH) $(UMM_MALLOC_PATH) \
+        $(BOOTLOADER_PATH)/rboot/appcode $(COMMON_PATH) $(COMMON_PATH)/mg_rpc \
+        $(MIOT_ESP_SRC_PATH) $(SPIFFS_PATH) $(COMMON_ESP_PATH)
+IPATH = $(APP_MODULES) $(MIOT_PATH) $(MIOT_ESP_PATH)/include $(SPIFFS_PATH) \
+        $(BOOTLOADER_PATH)/rboot $(LWIP_PATH)/src/include \
+        $(LWIP_PATH)/src/include/ipv4 $(LWIP_PATH)/espressif/include \
+        $(SDK_PATH)/include $(SDK_PATH)/include/json $(COMMON_ESP_PATH) \
+        $(MIOT_ESP_SRC_PATH) $(COMMON_PATH)/mg_rpc .
+LPATH = $(SDK_PATH)/lib $(BUILD_DIR)/lwip $(MIOT_ESP_SRC_PATH)
+
+# libraries used in this project, mainly provided by the SDK
+SDK_LIBS = c crypto gcc hal m pp phy net80211 wpa main_ota
+LIBS = $(addprefix -l,$(SDK_LIBS))
+
+SHIMS = -DNDEBUG
+
+V7_FEATURES ?= $(COMMON_V7_FEATURES) \
+               -DV7_BUILD_PROFILE=1 -DV7_ENABLE_FILE \
+               -DV7_DISABLE_AST_TAG_NAMES \
+               -DV7_ENABLE__RegExp=1 \
+               -DV7_ENABLE__StackTrace=1 \
+               -DV7_ENABLE__Object__getPrototypeOf \
+               -DV7_ENABLE__Object__isPrototypeOf \
+               -DV7_ENABLE__Object__hasOwnProperty \
+               -DV7_ENABLE__Object__keys \
+               -DV7_ENABLE__Object__isExtensible \
+               -DV7_EXPOSE_PRIVATE -DV7_ENABLE_ENTITY_IDS
+V7_GC_DEBUG ?= 1
+V7_STACK_GUARD ?= 1
+
+MIOT_ESP_FEATURES = -DMIOT_ENABLE_WEB_CONFIG \
+                    -DMIOT_ENABLE_FILE_UPLOAD \
+                    -DMIOT_ENABLE_CONSOLE_FILE_BUFFER
+
+MINIZ_FLAGS = -DMINIZ_NO_STDIO -DMINIZ_NO_TIME -DMINIZ_NO_ARCHIVE_APIS \
+              -DMINIZ_NO_ARCHIVE_APIS -DMINIZ_NO_ZLIB_APIS \
+              -DMINIZ_NO_ZLIB_COMPATIBLE_NAMES
+
+MG_FEATURES ?= $(MG_FEATURES_TINY) -DMG_ESP8266 -DMG_EXT_SHA1 \
+               -DMG_ENABLE_FILESYSTEM -DMG_ENABLE_DIRECTORY_LISTING
+
+FEATURES_EXTRA ?=
+FEATURES = $(MG_FEATURES) $(MIOT_FEATURES) $(MIOT_ESP_FEATURES) \
+           $(FEATURES_EXTRA) \
+           -DESP_COREDUMP -DESP_FLASH_BYTES_EMUL -DCS_ENABLE_SPIFFS \
+           -DBOOT_BIG_FLASH \
+           -DSPIFFS_ON_PAGE_MOVE_HOOK=esp_spiffs_on_page_move_hook \
+           -DCS_MMAP -DV7_MMAP_EXEC -DESP_UMM_ENABLE
+
+MEMORY_FLAGS = -DMBUF_SIZE_MULTIPLIER=1 -DFS_MAX_OPEN_FILES=5 \
+               -DV7_STACK_SIZE=8192-64
+
+.PHONY: all clean
+
+MIOT_CFLAGS = -DMIOT_APP=\"$(APP)\" -DLWIP_OPEN_SRC -DMG_LOCALS -DMG_DISABLE_SOCKET_IF \
+              -DESP_ENABLE_MG_LWIP_IF \
+              -DMIOT_MAX_NUM_UARTS=2 \
+              -DMIOT_NUM_GPIO=16 \
+              -DMIOT_DEBUG_UART=$(MIOT_DEBUG_UART) \
+              -DC_DISABLE_BUILTIN_SNPRINTF
+
+ifeq "${CREATE_SPIFFS_FS}" "1"
+  FS_IMG = $(FW_STAGING_DIR)/$(FS_ADDR).bin
+endif
+
+LD_SCRIPT_TEMPL = $(MIOT_ESP_PATH)/ld/fw.ld
+
+_FLASH_SIZE = $(shell echo $$((`echo $(FLASH_SIZE) | \
+   sed -e 's/K/*1024/;s/k/128/;s/M/*1048576/;s/m/*131072/'`)))
+_FS_SIZE = $(shell echo $$((`echo $(FS_SIZE) | \
+   sed -e 's/K/*1024/;s/k/128/;s/M/*1048576/;s/m/*131072/'`)))
+
+LWIP_LIB = $(LWIP_BUILD_DIR)/liblwip_cs.a
+MIOT_LIB = $(BUILD_DIR)/mongoose-iot.a
+SYS_CONFIG_C = $(GEN_DIR)/sys_config.c
+SYS_CONFIG_DEFAULTS_JSON = $(GEN_DIR)/sys_config_defaults.json
+SYS_CONFIG_SCHEMA_JSON = $(GEN_DIR)/sys_config_schema.json
+SYS_RO_VARS_C = $(GEN_DIR)/sys_ro_vars.c
+SYS_RO_VARS_SCHEMA_JSON = $(GEN_DIR)/sys_ro_vars_schema.json
+BUILD_INFO_C = $(GEN_DIR)/build_info.c
+BUILD_INFO_O = $(BUILD_DIR)/build_info.o
+BUILD_INFO_JSON = $(GEN_DIR)/build_info.json
+MG_BUILD_INFO_C = $(GEN_DIR)/mg_build_info.c
+MG_BUILD_INFO_O = $(BUILD_DIR)/mg_build_info.o
+GENFILES_FLAG = $(BUILD_DIR)/genfiles.done
+GENFILES_LIST = $(LD_SCRIPT) $(SYS_CONFIG_C) $(SYS_RO_VARS_C)
+FW_FILE_1_OUT = $(FW_STAGING_DIR)/$(shell printf "0x%05x.bin" $(FW_FILE_1_ADDR))
+FW_FILE_2_OUT = $(FW_STAGING_DIR)/$(shell printf "0x%05x.bin" $(FW_FILE_2_ADDR))
+IMAGE_HEADER_SIZE = 0
+
+ifeq "$(SSL)" "mbedTLS"
+  IPATH += $(MBEDTLS_PATH)/include
+  MIOT_SRCS += esp_crypto.c
+  MIOT_ESP_FEATURES += -DMG_ENABLE_SSL -DMG_SSL_IF=MG_SSL_IF_MBEDTLS -DMG_SSL_IF_MBEDTLS_FREE_CERTS
+  SSL_LIBS = $(addprefix $(MBEDTLS_PATH)/library/,libmbedcrypto.a libmbedtls.a libmbedx509.a)
+  MBEDTLS_CFLAGS = $(CFLAGS) -Wno-unused-variable -Wno-unused-function
+  SYS_CONF_SCHEMA += $(MIOT_ESP_SRC_PATH)/esp_mbedtls_config.yaml
+  ifeq "$(MIOT_ENABLE_ATCA)" "1"
+    MBEDTLS_CFLAGS += -DMBEDTLS_ECP_ATCA -I$(ATCA_PATH)/lib
+  endif
+
+$(SSL_LIBS):
+	$(Q) make -j4 -C $(MBEDTLS_PATH)/library $(notdir $@) \
+	  CC=$(CC) AR=$(AR) \
+	  CFLAGS="$(MBEDTLS_CFLAGS)"
+	$(Q) $(OBJCOPY) --rename-section .rodata=.irom0.text $@
+	$(Q) $(OBJCOPY) --rename-section .rodata.str1.1=.irom0.text $@
+else
+  SSL_LIBS =
+endif
+
+ifeq "$(MIOT_ENABLE_JS)" "1"
+  GENFILES_LIST += $(V7_PATH)/v7.c $(V7_PATH)/v7.h
+  MIOT_FEATURES += -DMIOT_ENABLE_JS $(V7_FEATURES)
+  VPATH += $(V7_PATH)
+  $(BUILD_DIR)/mongoose.o: CFLAGS += -DEXCLUDE_COMMON
+  ifneq "$(V7_GC_DEBUG)" "1"
+    MEMORY_FLAGS += -DV7_DISABLE_STR_ALLOC_SEQ
+  endif
+  ifeq "$(V7_STACK_GUARD)" "1"
+    MEMORY_FLAGS += -DV7_STACK_GUARD_MIN_SIZE=256 -finstrument-functions
+  endif
+else
+  MIOT_SRCS += cs_file.c
+endif
+
+include $(MIOT_PATH)/fw/src/spiffs.mk
+
+MIOT_OBJS = $(addprefix $(BUILD_DIR)/,$(patsubst %.c,%.o,$(MIOT_SRCS)))
+APP_OBJS = $(addprefix $(BUILD_DIR)/,$(patsubst %.c,%.o,$(APP_SRCS)))
+
+APP_BIN = $(BUILD_DIR)/$(APP).bin
+APP_ELF = $(BUILD_DIR)/$(APP).elf
+LD_SCRIPT = $(GEN_DIR)/$(FW_FILE_2_ADDR).ld
+LD_WRAPPERS =
+HEAP_LOG_FLAGS =
+
+ifneq "${MIOT_ENABLE_HEAP_LOG}${MIOT_ENABLE_CALL_TRACE}" "00"
+  HEAP_LOG_FLAGS += -DMIOT_ENABLE_HEAP_LOG
+  LD_WRAPPERS += -Wl,--wrap=pvPortCalloc \
+                 -Wl,--wrap=pvPortMalloc \
+                 -Wl,--wrap=pvPortZalloc \
+                 -Wl,--wrap=pvPortRealloc \
+                 -Wl,--wrap=vPortFree
+endif
+ifeq "${MIOT_ENABLE_CALL_TRACE}" "1"
+  HEAP_LOG_FLAGS += -finstrument-functions -DCALL_TRACE_SIZE=32
+  ifeq "$(MIOT_ENABLE_JS)" "1"
+    HEAP_LOG_FLAGS += -DV7_ENABLE_CALL_TRACE -DMIOT_ENABLE_CALL_TRACE
+  else
+    MIOT_SRCS += cs_heap_trace.c
+    HEAP_LOG_FLAGS += -DMIOT_ENABLE_CALL_TRACE
+  endif
+endif
+
+IMAGE_HEADER_SIZE = 0x10
+ROM_SIZE = $(shell printf "0x%05x" "$$((0x100000 - $(FW_FILE_2_ADDR) - $(_FS_SIZE) - $(RF_CAL_DATA_SIZE) - $(SYS_PARAMS_SIZE) - $(IMAGE_HEADER_SIZE)))")
+FW_RF_CAL_DATA_ADDR = $(shell printf "0x%05x" "$$((0x100000 - $(RF_CAL_DATA_SIZE) - $(SYS_PARAMS_SIZE)))")
+FS_ADDR  = $(shell printf "0x%05x" "$$((0x100000 - $(_FS_SIZE) - $(RF_CAL_DATA_SIZE) - $(SYS_PARAMS_SIZE)))")
+FS2_ADDR = $(shell printf "0x%05x" "$$((0x200000 - $(_FS_SIZE) - $(RF_CAL_DATA_SIZE) - $(SYS_PARAMS_SIZE)))")
+SYS_PARAMS_ADDR = $(shell printf "0x%05x" "$$(($(_FLASH_SIZE) - $(SYS_PARAMS_SIZE)))")
+RBOOT_CFG_INIT=$(FW_STAGING_DIR)/0x01000.bin
+RF_CAL_DATA_INIT=$(FW_STAGING_DIR)/$(FW_RF_CAL_DATA_ADDR).bin
+PREREQ = rboot $(RBOOT_CFG_INIT)
+BOOTLOADER_FLAGS = -DFW1_ADDR=$(FW_FILE_2_ADDR) \
+                   -DFW2_ADDR=$(FW2_FILE_2_ADDR) \
+                   -DFW1_FS_ADDR=$(FS_ADDR) \
+                   -DFW2_FS_ADDR=$(FS2_ADDR) \
+                   -DFS_SIZE=$(_FS_SIZE) \
+                   -DFW_SIZE=$(ROM_SIZE)
+
+FW_MANIFEST = $(FW_STAGING_DIR)/manifest.json
+
+INCDIRS = $(addprefix -I,$(IPATH)) -I$(GEN_DIR)
+LIBDIRS = $(addprefix -L,$(LPATH))
+
+CFLAGS += $(MEMORY_FLAGS) $(SHIMS) $(FEATURES) \
+          -DFW_RF_CAL_DATA_ADDR=$(FW_RF_CAL_DATA_ADDR) \
+          -DFW_ARCHITECTURE=$(APP_PLATFORM) \
+          $(MIOT_CFLAGS) $(APP_CFLAGS) $(CFLAGS_EXTRA) \
+          $(HEAP_LOG_FLAGS) $(MINIZ_FLAGS) $(BOOTLOADER_FLAGS)
+
+LDFLAGS += -u Cache_Read_Enable_New
+
+$(BUILD_DIR) $(FW_DIR) $(FW_STAGING_DIR) $(GEN_DIR):
+	$(vecho) "MKDIR $@"
+	$(Q) mkdir -p $@
+
+# Main output product: firmware files.
+FW_PARTS = boot:src=$(FW_FILE_1_OUT),addr=0 \
+           boot_cfg:src=$(RBOOT_CFG_INIT),addr=0x1000 \
+           rf_cal_data:src=$(RF_CAL_DATA_INIT),addr=$(FW_RF_CAL_DATA_ADDR) \
+           fw:src=$(FW_FILE_2_OUT),addr=$(FW_FILE_2_ADDR) \
+           sys_params:type=sys_params,src=$(SDK_PATH)/bin/esp_init_data_default.bin,addr=$(SYS_PARAMS_ADDR)
+
+ifeq "$(CREATE_SPIFFS_FS)" "1"
+  FW_PARTS += fs:src=$(FS_IMG),type=fs,addr=$(FS_ADDR),fs_size=$(_FS_SIZE),fs_block_size=$(FS_BLOCK_SIZE),fs_page_size=$(FS_PAGE_SIZE),fs_erase_size=$(FS_ERASE_SIZE)
+endif
+
+ifeq "$(CREATE_RAW_FS)" "1"
+  FW_PARTS += fs_dir:src=$(FS_STAGING_DIR),type=fs_dir,addr=$(FS_ADDR),fs_size=$(_FS_SIZE),fs_block_size=$(FS_BLOCK_SIZE),fs_page_size=$(FS_PAGE_SIZE),fs_erase_size=$(FS_ERASE_SIZE)
+endif
+
+include $(MIOT_PATH)/common/scripts/fw_meta.mk
+
+all: $(FW_DIR) $(BUILD_DIR) $(GEN_DIR) $(FW_STAGING_DIR) $(PREREQ) $(FW_ZIP)
+
+$(FW_MANIFEST): $(FW_FILE_1_OUT) $(RBOOT_CFG_INIT) $(RF_CAL_DATA_INIT) \
+                $(FW_FILE_2_OUT) $(FS_IMG) $(FS_FILES) $(JSBIN_SRCS)
+
+$(RBOOT_CFG_INIT) $(RF_CAL_DATA_INIT): $(FW_STAGING_DIR)
+	$(vecho) "GEN   $@"
+	$(Q) dd if=/dev/zero ibs=1 count=4096 | tr "\000" "\377" > $@
+
+$(FW_FILE_1_OUT): $(BUILD_DIR)/rboot.bin
+	$(vecho) "CP    $< -> $@"
+	$(Q) cp $< $@
+
+$(FW_FILE_2_OUT): $(APP_BIN)
+	$(vecho) "CP    $< -> $@"
+	$(Q) cp $< $@
+
+$(APP_BIN): $(APP_ELF)
+	$(vecho) "FW    $< -> $@"
+	$(Q) $(ESPTOOL2) $(FW_USER_ARGS) $< $@ $(FW_SECTS)
+
+# -- Linking.
+
+# Link the main ELF output file.
+$(APP_ELF): $(APP_OBJS) $(BUILD_INFO_O) $(MG_BUILD_INFO_O) $(MIOT_LIB) $(ATCA_LIB) $(LWIP_LIB) $(SSL_LIBS) $(BUILD_DIR)/build_info.o $(LD_SCRIPT)
+	$(call link,$(APP_OBJS) $(MG_BUILD_INFO_O) $(BUILD_INFO_O) $(MIOT_LIB) $(ATCA_LIB) $(LWIP_LIB) $(SSL_LIBS) $(LIBS) $(LD_WRAPPERS))
+
+$(BUILD_DIR)/dummy_main.c: $(APP_OBJS) $(MIOT_ESP_PATH)/Makefile.build
+	$(vecho) "GEN   $@"
+	$(Q) echo "void user_init(void){}; " \
+            "void system_restart_local(){};" \
+            "void __wrap_user_fatal_exception_handler(){}; " \
+            "void __cyg_profile_func_enter(void *this_fn, void *call_site){(void) this_fn; (void) call_site;}" \
+            "void __cyg_profile_func_exit(void *this_fn, void *call_site){(void) this_fn; (void) call_site;}" > $@
+
+# Main app lib.
+$(MIOT_LIB): $(MIOT_OBJS)
+	$(vecho) "AR    $@"
+	$(Q) $(AR) cru $@ $^
+	$(Q) $(OBJCOPY) --rename-section .rodata=.irom0.text $@
+	$(Q) $(OBJCOPY) --rename-section .rodata.str1.1=.irom0.text $@
+
+# LWIP.
+$(LWIP_LIB): $(LWIP_PATH)
+	$(Q) $(MAKE) -C $(LWIP_PATH) -j3 all \
+	  APP=liblwip_cs BUILD_DIR=$(abspath $(LWIP_BUILD_DIR)) \
+	  CFLAGS_EXTRA="$(HEAP_LOG_FLAGS)"
+
+# This rule is for normal (pre-existing) sources from VPATH.
+$(BUILD_DIR)/%.o: %.c $(GENFILES_FLAG)
+	$(compile)
+
+# This one is for generated sources in build/gen directory.
+$(BUILD_DIR)/%.o: $(GEN_DIR)/%.c $(GENFILES_FLAG)
+	$(compile)
+
+# Common gathering point for all generated files.
+# Except build info, which is special because it depends on objects.
+$(GENFILES_FLAG): $(GENFILES_LIST)
+	$(Q) touch $@
+
+# Generate linker script.
+$(LD_SCRIPT): $(LD_SCRIPT_TEMPL)
+	$(eval _IROM0ADDR=$(shell printf "0x%08x" $$((0x40200000 + $(basename $(notdir $@)) + $(IMAGE_HEADER_SIZE)))))
+	$(eval _IROM0SIZE=$(ROM_SIZE))
+	$(vecho) "GEN   $^ ($(_IROM0SIZE) @ $(_IROM0ADDR)) -> $@"
+	$(Q) mkdir -p $(GEN_DIR)
+	$(Q) sed -e 's/_IROM0ADDR/$(_IROM0ADDR)/; s/_IROM0SIZE/$(_IROM0SIZE)/' $^ > $@
+
+include $(MIOT_PATH)/common/scripts/build_info.mk
+include $(MIOT_PATH)/fw/src/sys_config.mk
+
+# Regenerate build info if there are changes in objects.
+$(BUILD_INFO_C) $(BUILD_INFO_JSON): $(APP_OBJS) $(MIOT_OBJS)
+	$(call gen_build_info,$@,,$(APP_BUILD_ID),$(APP_VERSION),,$(BUILD_INFO_C),$(BUILD_INFO_JSON))
+
+$(MG_BUILD_INFO_C): $(MIOT_OBJS)
+	$(call gen_build_info,$@,$(MIOT_PATH)/fw,,,mg_,$(MG_BUILD_INFO_C),)
+
+# Pull in auto-generated .c dependencies (if any).
+-include $(wildcard $(BUILD_DIR)/*.d)
+
+# -- Filesystem.
+
+$(FS_IMG): $(APP_FS_PATH) $(COMMON_FS_PATH) $(FS_FILES) $(JSBIN_SRCS) $(SYS_CONFIG_C) $(SYS_RO_VARS_C)
+	$(call mkspiffs,$(_FS_SIZE))
+
+ifeq "$(MIOT_ENABLE_JS)" "1"
+$(V7_PATH)/v7.c $(V7_PATH)/v7.h:
+	make -C $(V7_PATH) $(notdir $@)
+
+$(BUILD_DIR)/v7: $(V7_PATH)/v7.c $(V7_PATH)/v7.h
+	$(vecho) "GCC   v7"
+	$(Q) gcc -DV7_EXE $(V7_FEATURES) $(V7_PATH)/v7.c -lm -o $(BUILD_DIR)/v7
+
+$(FS_IMG): $(BUILD_DIR)/v7
+
+endif
+
+# Target specific warning inhibitions
+
+build/spiffs_hydrogen.o: CFLAGS += -Wno-unused-function
+
+#
+# Auxiliary targets.
+#
+
+rboot: $(BUILD_DIR)/esptool2 $(BUILD_DIR)/rboot.bin $(FW_STAGING_DIR)/$(RBOOT_FW_NAME)
+
+$(ESPTOOL2):
+	$(Q) $(MAKE) --no-print-directory -C $(BOOTLOADER_PATH)/esptool2 BUILD_DIR=$(abspath $(BUILD_DIR))
+
+$(BUILD_DIR)/rboot.bin: $(ESPTOOL2)
+	$(Q) $(MAKE) --no-print-directory -C $(BOOTLOADER_PATH)/rboot -f rboot.mk \
+	  RBOOT_BUILD_BASE=$(abspath $(BUILD_DIR)) \
+	  RBOOT_GEN_BASE=$(abspath $(GEN_DIR)) \
+	  ESPTOOL2=$(abspath $(ESPTOOL2)) \
+	  RBOOT_BIG_FLASH=1 CFLAGS_EXTRA="$(BOOTLOADER_FLAGS)"
+
+clean:
+	$(Q) rm -rf $(BUILD_DIR) $(FW_DIR)
+ifeq "$(SSL)" "mbedTLS"
+	$(Q) make -C $(MBEDTLS_PATH)/library clean
+endif

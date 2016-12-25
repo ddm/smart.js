@@ -1,2 +1,0 @@
-#define SSID "ETHERNET1"
-#define SSID_PASSWORD "FD76EB0DCC"

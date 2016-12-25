@@ -1,41 +1,28 @@
-# Smart.js platform
+# Mongoose OS
 
-[![Join the chat at https://gitter.im/cesanta/smart.js](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/cesanta/smart.js?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
+- [Mongoose OS](https://mongoose-iot.com) - open source embedded operating system for low-power connected microcontrollers. 
 
-Smart.js is a generic, hardware independent, full-stack
-Internet of Things software platform.
-Smart.js solves problems of reliability, scalability, security
-and remote management which are common to all verticals, being it industrial
-automation, healthcare, automotive, home automation, or other.
+Designed for Internet of Things: 
+- secure connectivity; 
+- best runtime performance; 
+- complete environment for prototyping, development and managing;
+- available for ESP8266, ESP 32, TI CC3200, STM32, NRF52 and other hardware platforms.
 
-Take a look at 2 minute video that shows Smart.js in action:
-
-[![Smart.js in action](https://docs.cesanta.com/images/Smart.js.clip.png)](https://www.youtube.com/watch?v=6DYfGsqQzCg)
-
-# Documentation and Downloads
-
-- [Smart.js Developer Centre](https://docs.cesanta.com/smartjs) - User Guide and API reference
-- Current development Smart.js firmware biulds:
-   - [smartjs\_devel\_win.zip](https://backend.cesanta.com/devel/smartjs_devel_win.zip) - Windows build
-   - [smartjs\_devel\_mac.zip](https://backend.cesanta.com/devel/smartjs_devel_mac.zip) - MacOS build
-- [Releases](https://github.com/cesanta/smart.js/releases) - stable released firmware builds
-
-# Contributions
-
-People who have agreed to the
-[Cesanta CLA](https://docs.cesanta.com/contributors_la.shtml)
-can make contributions. Note that the CLA isn't a copyright
-_assigment_ but rather a copyright _license_.
-You retain the copyright on your contributions.
+# Support
+- [Mongoose OS Documentation](https://mongoose-iot.com/docs/#/overview/)
+- [Support Forum - ask your technical questions here] (http://forum.cesanta.com/index.php?p=/categories/mongoose-iot)
+- [Commercial licensing and support available](https://cesanta.com/contact)
 
 # Licensing
 
-Smart.js is released under the commercial and
-[GNU GPL v.2](http://www.gnu.org/licenses/old-licenses/gpl-2.0.html) open
-source licenses. The GPLv2 open source License does not generally permit
-incorporating this software into non-open source programs.
-For those customers who do not wish to comply with the GPLv2 open
-source license requirements,
-[Cesanta](https://www.cesanta.com) offers a full,
-royalty-free commercial license and professional support
-without any of the GPL restrictions.
+Mongoose OS is released under Commercial and [GNU GPL v.2](http://www.gnu.org/licenses/old-licenses/gpl-2.0.html) open source licenses.
+
+Commercial Projects: [Contact us for the commercial license.] (https://www.cesanta.com/contact)
+
+# Contributions
+
+To submit contributions, sign
+[Cesanta CLA](https://docs.cesanta.com/contributors_la.shtml)
+and send GitHub pull request. You retain the copyright on your contributions.
+
+[![Analytics](https://ga-beacon.appspot.com/UA-42732794-6/project-page)](https://github.com/cesanta/mongoose-iot)
